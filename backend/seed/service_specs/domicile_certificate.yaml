@@ -1,0 +1,122 @@
+service:
+  id: "domicile_certificate"
+  name:
+    en: "Domicile Certificate"
+    hi: "अधिवास प्रमाण पत्र"
+    ta: "வாழிட சான்று"
+    te: "నివాస ధృవీకరణ పత్రం"
+    mr: "अधिवास प्रमाणपत्र"
+  department: "Revenue Department"
+  sla_days: 15
+  fee:
+    amount: 50
+    currency: "INR"
+    waiver_conditions:
+      - condition: "annual_income < 20000"
+        waiver_percent: 100
+
+slots:
+  - name: applicant_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+      max_length: 100
+    prompt:
+      en: "Please tell the applicant's full name"
+      hi: "आवेदक का पूरा नाम बताएं"
+      ta: "தயவுசெய்து விண்ணப்பதாரரின் முழு பெயரை சொல்லுங்கள்"
+
+  - name: applicant_dob
+    type: date
+    required: true
+    classification: RESTRICTED
+    validation:
+      format: "DD-MM-YYYY"
+    prompt:
+      en: "What is the applicant's date of birth? (DD-MM-YYYY)"
+      hi: "आवेदक की जन्म तिथि क्या है?"
+
+  - name: aadhaar_number
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      pattern: "^[0-9]{12}$"
+      error_msg: "Aadhaar must be exactly 12 digits"
+    prompt:
+      en: "Please provide the Aadhaar card number (12 digits)"
+      hi: "आधार कार्ड नंबर बताएं (12 अंक)"
+
+  - name: address
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 10
+    prompt:
+      en: "Please provide the complete residential address"
+      hi: "पूरा निवास पता बताएं"
+
+  - name: residence_years
+    type: number
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min: 0
+      max: 100
+      error_msg: "Residence years must be between 0 and 100"
+    prompt:
+      en: "How many years have you been residing in this state?"
+      hi: "आप इस राज्य में कितने वर्षों से रह रहे हैं?"
+
+  - name: place_of_birth
+    type: string
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min_length: 3
+    prompt:
+      en: "What is your place of birth? (village/city, district, state)"
+      hi: "आपका जन्म स्थान क्या है? (गांव/शहर, जिला, राज्य)"
+
+  - name: purpose
+    type: string
+    required: true
+    classification: NON_SENSITIVE
+    validation:
+      min_length: 3
+    prompt:
+      en: "Purpose of domicile certificate? (education/employment/property/government scheme)"
+      hi: "अधिवास प्रमाण पत्र का उद्देश्य?"
+
+documents:
+  required:
+    - type: IDENTITY_PROOF
+      accepted: ["AADHAAR", "PAN", "VOTER_ID", "PASSPORT"]
+    - type: RESIDENCE_PROOF
+      accepted: ["AADHAAR", "VOTER_ID", "UTILITY_BILL", "RATION_CARD", "PROPERTY_TAX"]
+    - type: BIRTH_PROOF
+      accepted: ["BIRTH_CERTIFICATE", "SCHOOL_LEAVING_CERT", "PASSPORT"]
+  optional:
+    - type: PREVIOUS_DOMICILE
+      accepted: ["DOMICILE_CERT_FROM_OTHER_STATE"]
+
+eligibility:
+  - rule: "applicant_age >= 18"
+    error:
+      en: "Applicant must be 18 years or older"
+      hi: "आवेदक की आयु 18 वर्ष से अधिक होनी चाहिए"
+  - rule: "residence_years >= 15"
+    error:
+      en: "Applicant must have resided in the state for at least 15 years"
+      hi: "आवेदक को राज्य में कम से कम 15 वर्षों से निवास करना चाहिए"
+
+cross_field_validations:
+  - rule: "doc_name_matches_declared"
+    description: "Name on documents should match declared applicant name"
+    severity: "ERROR"
+    error:
+      en: "Name on document does not match the declared applicant name"
+      hi: "दस्तावेज़ पर नाम घोषित नाम से मेल नहीं खाता"

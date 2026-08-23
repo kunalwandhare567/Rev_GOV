@@ -1,0 +1,129 @@
+service:
+  id: "caste_certificate"
+  name:
+    en: "Caste Certificate"
+    hi: "जाति प्रमाण पत्र"
+    ta: "சாதி சான்று"
+    te: "కుల ధృవీకరణ పత్రం"
+    mr: "जात प्रमाणपत्र"
+  department: "Revenue Department"
+  sla_days: 10
+  fee:
+    amount: 50
+    currency: "INR"
+    waiver_conditions:
+      - condition: "annual_income < 20000"
+        waiver_percent: 100
+
+slots:
+  - name: applicant_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+      max_length: 100
+    prompt:
+      en: "Please tell the applicant's full name"
+      hi: "आवेदक का पूरा नाम बताएं"
+      ta: "தயவுசெய்து விண்ணப்பதாரரின் முழு பெயரை சொல்லுங்கள்"
+
+  - name: applicant_dob
+    type: date
+    required: true
+    classification: RESTRICTED
+    validation:
+      format: "DD-MM-YYYY"
+    prompt:
+      en: "What is the applicant's date of birth? (DD-MM-YYYY)"
+      hi: "आवेदक की जन्म तिथि क्या है?"
+
+  - name: caste_category
+    type: string
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      allowed_values: ["SC", "ST", "OBC", "NT", "VJ", "SBC"]
+    prompt:
+      en: "What is the caste category? (SC/ST/OBC/NT/VJ/SBC)"
+      hi: "जाति वर्ग क्या है? (SC/ST/OBC/NT/VJ/SBC)"
+      ta: "சாதி வகை என்ன? (SC/ST/OBC/NT/VJ/SBC)"
+
+  - name: caste_name
+    type: string
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min_length: 2
+    prompt:
+      en: "Please tell the specific caste/sub-caste name"
+      hi: "विशिष्ट जाति/उपजाति का नाम बताएं"
+
+  - name: aadhaar_number
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      pattern: "^[0-9]{12}$"
+      error_msg: "Aadhaar must be exactly 12 digits"
+    prompt:
+      en: "Please provide the Aadhaar card number (12 digits)"
+      hi: "आधार कार्ड नंबर बताएं (12 अंक)"
+
+  - name: father_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+    prompt:
+      en: "Please tell the father's full name"
+      hi: "पिता का पूरा नाम बताएं"
+
+  - name: address
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 10
+    prompt:
+      en: "Please provide the complete residential address"
+      hi: "पूरा निवास पता बताएं"
+
+  - name: purpose
+    type: string
+    required: true
+    classification: NON_SENSITIVE
+    validation:
+      min_length: 3
+    prompt:
+      en: "What is the purpose of this certificate? (e.g., education, employment, government scheme)"
+      hi: "इस प्रमाण पत्र का उद्देश्य क्या है?"
+
+documents:
+  required:
+    - type: IDENTITY_PROOF
+      accepted: ["AADHAAR", "PAN", "VOTER_ID"]
+    - type: CASTE_PROOF
+      accepted: ["FATHER_CASTE_CERT", "SCHOOL_LEAVING_CERT", "COMMUNITY_LETTER"]
+  optional:
+    - type: INCOME_PROOF
+      accepted: ["SALARY_SLIP", "SELF_DECLARATION"]
+
+eligibility:
+  - rule: "applicant_age >= 18"
+    error:
+      en: "Applicant must be 18 years or older"
+      hi: "आवेदक की आयु 18 वर्ष से अधिक होनी चाहिए"
+  - rule: "caste_category in ['SC', 'ST', 'OBC', 'NT', 'VJ', 'SBC']"
+    error:
+      en: "Invalid caste category. Must be SC, ST, OBC, NT, VJ, or SBC"
+      hi: "अमान्य जाति वर्ग"
+
+cross_field_validations:
+  - rule: "doc_name_matches_declared"
+    description: "Name on documents should match declared applicant name"
+    severity: "ERROR"
+    error:
+      en: "Name on document does not match the declared applicant name"
+      hi: "दस्तावेज़ पर नाम घोषित नाम से मेल नहीं खाता"

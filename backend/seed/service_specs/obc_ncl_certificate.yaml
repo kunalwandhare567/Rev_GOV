@@ -1,0 +1,151 @@
+service:
+  id: "obc_ncl_certificate"
+  name:
+    en: "OBC Non-Creamy Layer Certificate"
+    hi: "ओबीसी नॉन-क्रीमी लेयर प्रमाण पत्र"
+    ta: "OBC பிரீமி அல்லாத அடுக்கு சான்று"
+    te: "OBC నాన్-క్రీమీ లేయర్ సర్టిఫికెట్"
+    mr: "ओबीसी नॉन-क्रीमी लेयर प्रमाणपत्र"
+  department: "Revenue Department"
+  sla_days: 15
+  fee:
+    amount: 50
+    currency: "INR"
+    waiver_conditions:
+      - condition: "annual_income < 20000"
+        waiver_percent: 100
+
+slots:
+  - name: applicant_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+      max_length: 100
+    prompt:
+      en: "Please tell the applicant's full name"
+      hi: "आवेदक का पूरा नाम बताएं"
+      ta: "தயவுசெய்து விண்ணப்பதாரரின் முழு பெயரை சொல்லுங்கள்"
+
+  - name: applicant_dob
+    type: date
+    required: true
+    classification: RESTRICTED
+    validation:
+      format: "DD-MM-YYYY"
+    prompt:
+      en: "What is the applicant's date of birth? (DD-MM-YYYY)"
+      hi: "आवेदक की जन्म तिथि क्या है?"
+
+  - name: annual_income
+    type: number
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min: 0
+      max: 800000
+      error_msg: "Annual income must be below Rs. 8,00,000 for Non-Creamy Layer"
+    prompt:
+      en: "What is the annual family income? (must be below Rs. 8,00,000)"
+      hi: "वार्षिक पारिवारिक आय क्या है? (रु. 8,00,000 से कम होनी चाहिए)"
+
+  - name: caste_category
+    type: string
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      allowed_values: ["OBC"]
+    prompt:
+      en: "Confirm: You are applying under OBC category"
+      hi: "पुष्टि करें: आप OBC वर्ग के अंतर्गत आवेदन कर रहे हैं"
+
+  - name: caste_name
+    type: string
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min_length: 2
+    prompt:
+      en: "Please tell the specific OBC caste/sub-caste name"
+      hi: "विशिष्ट OBC जाति/उपजाति का नाम बताएं"
+
+  - name: aadhaar_number
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      pattern: "^[0-9]{12}$"
+      error_msg: "Aadhaar must be exactly 12 digits"
+    prompt:
+      en: "Please provide the Aadhaar card number (12 digits)"
+      hi: "आधार कार्ड नंबर बताएं (12 अंक)"
+
+  - name: father_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+    prompt:
+      en: "Please tell the father's full name"
+      hi: "पिता का पूरा नाम बताएं"
+
+  - name: address
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 10
+    prompt:
+      en: "Please provide the complete residential address"
+      hi: "पूरा निवास पता बताएं"
+
+  - name: purpose
+    type: string
+    required: true
+    classification: NON_SENSITIVE
+    validation:
+      min_length: 3
+    prompt:
+      en: "Purpose of certificate? (education/employment/government scheme)"
+      hi: "प्रमाण पत्र का उद्देश्य?"
+
+documents:
+  required:
+    - type: IDENTITY_PROOF
+      accepted: ["AADHAAR", "PAN", "VOTER_ID"]
+    - type: CASTE_PROOF
+      accepted: ["FATHER_CASTE_CERT", "SCHOOL_LEAVING_CERT"]
+    - type: INCOME_PROOF
+      accepted: ["SALARY_SLIP", "BANK_STATEMENT", "SELF_DECLARATION"]
+    - type: ADDRESS_PROOF
+      accepted: ["AADHAAR", "VOTER_ID", "UTILITY_BILL", "RATION_CARD"]
+
+eligibility:
+  - rule: "applicant_age >= 18"
+    error:
+      en: "Applicant must be 18 years or older"
+      hi: "आवेदक की आयु 18 वर्ष से अधिक होनी चाहिए"
+  - rule: "annual_income <= 800000"
+    error:
+      en: "Annual income exceeds Non-Creamy Layer threshold of Rs. 8,00,000"
+      hi: "वार्षिक आय नॉन-क्रीमी लेयर सीमा रु. 8,00,000 से अधिक है"
+  - rule: "caste_category == 'OBC'"
+    error:
+      en: "This certificate is only for OBC category applicants"
+      hi: "यह प्रमाण पत्र केवल OBC वर्ग के आवेदकों के लिए है"
+
+cross_field_validations:
+  - rule: "doc_income_close_to_declared"
+    description: "OCR extracted income should be within 20% of declared income"
+    severity: "WARNING"
+    error:
+      en: "Declared income differs significantly from document. Please verify."
+      hi: "घोषित आय दस्तावेज़ से काफी अलग है। कृपया जांचें।"
+  - rule: "doc_name_matches_declared"
+    description: "Name on documents should match declared applicant name"
+    severity: "ERROR"
+    error:
+      en: "Name on document does not match the declared applicant name"
+      hi: "दस्तावेज़ पर नाम घोषित नाम से मेल नहीं खाता"

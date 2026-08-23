@@ -1,0 +1,16 @@
+.shell { display: flex; flex-direction: column; min-height: 100vh; background: var(--citizen-bg); }
+.header { position: sticky; top: 0; z-index: var(--z-overlay); display: flex; align-items: center; gap: var(--sp-6); padding: 0 var(--sp-8); height: var(--topbar-height); background: rgba(255,255,255,0.92); backdrop-filter: var(--glass-blur); border-bottom: 1px solid var(--citizen-border); box-shadow: var(--shadow-sm); }
+.logo { display: flex; align-items: center; gap: var(--sp-2); text-decoration: none; }
+.logoIcon { font-size: 1.4rem; }
+.logoText { font-family: var(--font-display); font-weight: var(--fw-bold); font-size: var(--text-lg); color: var(--clr-primary-700); }
+.nav { display: flex; align-items: center; gap: var(--sp-1); margin-left: var(--sp-8); flex: 1; }
+.navLink { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: var(--fw-medium); color: var(--clr-gray-600); transition: all var(--ease-base); }
+.navLink:hover { background: var(--clr-primary-50); color: var(--clr-primary-600); }
+.navLink.active { background: var(--clr-primary-100); color: var(--clr-primary-700); font-weight: var(--fw-semibold); }
+.headerActions { display: flex; align-items: center; gap: var(--sp-3); margin-left: auto; }
+.ctaBtn { padding: var(--sp-2) var(--sp-5); background: linear-gradient(135deg, var(--clr-primary-500), var(--clr-primary-700)); color: #fff; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--fw-semibold); transition: all var(--ease-base); box-shadow: var(--shadow-sm); }
+.ctaBtn:hover { transform: translateY(-1px); box-shadow: var(--shadow-glow-primary); }
+.adminLink { font-size: var(--text-xs); color: var(--clr-gray-400); padding: var(--sp-1) var(--sp-3); border: 1px solid var(--clr-gray-200); border-radius: var(--radius-sm); transition: all var(--ease-fast); }
+.adminLink:hover { color: var(--clr-gray-600); border-color: var(--clr-gray-300); }
+.main { flex: 1; }
+@media (max-width: 768px) { .header { padding: 0 var(--sp-4); } .nav { display: none; } .adminLink { display: none; } }

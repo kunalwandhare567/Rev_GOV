@@ -1,0 +1,113 @@
+service:
+  id: "income_certificate"
+  name:
+    en: "Income Certificate"
+    hi: "आय प्रमाण पत्र"
+    ta: "வருமான சான்று"
+    te: "ఆదాయ ధృవీకరణ పత్రం"
+    mr: "उत्पन्न प्रमाणपत्र"
+  department: "Revenue Department"
+  sla_days: 3
+  fee:
+    amount: 50
+    currency: "INR"
+    waiver_conditions:
+      - condition: "annual_income < 20000"
+        waiver_percent: 100
+      - condition: "bpl_card == True"
+        waiver_percent: 100
+
+slots:
+  - name: applicant_name
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 3
+      max_length: 100
+    prompt:
+      en: "Please tell the applicant's full name"
+      hi: "आवेदक का पूरा नाम बताएं"
+      ta: "தயவுசெய்து விண்ணப்பதாரரின் முழு பெயரை சொல்லுங்கள்"
+      te: "దయచేసి దరఖాస్తుదారు పూర్తి పేరు చెప్పండి"
+
+  - name: applicant_dob
+    type: date
+    required: true
+    classification: RESTRICTED
+    validation:
+      format: "DD-MM-YYYY"
+    prompt:
+      en: "What is the applicant's date of birth? (DD-MM-YYYY)"
+      hi: "आवेदक की जन्म तिथि क्या है? (DD-MM-YYYY)"
+
+  - name: annual_income
+    type: number
+    required: true
+    classification: QUASI_IDENTIFIER
+    validation:
+      min: 0
+      max: 10000000
+    prompt:
+      en: "What is the annual income? (in Rupees)"
+      hi: "वार्षिक आय कितनी है? (रुपए में)"
+      ta: "ஆண்டு வருமானம் என்ன? (ரூபாயில்)"
+
+  - name: aadhaar_number
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      pattern: "^[0-9]{12}$"
+      error_msg: "Aadhaar must be exactly 12 digits"
+    prompt:
+      en: "Please provide the Aadhaar card number (12 digits)"
+      hi: "आधार कार्ड नंबर बताएं (12 अंक)"
+
+  - name: address
+    type: string
+    required: true
+    classification: RESTRICTED
+    validation:
+      min_length: 10
+    prompt:
+      en: "Please provide the complete residential address"
+      hi: "पूरा निवास पता बताएं"
+
+  - name: purpose
+    type: string
+    required: true
+    classification: NON_SENSITIVE
+    validation:
+      min_length: 3
+    prompt:
+      en: "What is the purpose of this certificate?"
+      hi: "इस प्रमाण पत्र का उद्देश्य क्या है?"
+
+documents:
+  required:
+    - type: IDENTITY_PROOF
+      accepted: ["AADHAAR", "PAN", "VOTER_ID", "PASSPORT"]
+    - type: INCOME_PROOF
+      accepted: ["SALARY_SLIP", "BANK_STATEMENT", "EMPLOYER_LETTER", "SELF_DECLARATION"]
+  optional:
+    - type: BPL_CARD
+      condition: "annual_income < 20000"
+
+eligibility:
+  - rule: "applicant_age >= 18"
+    error:
+      en: "Applicant must be 18 years or older"
+      hi: "आवेदक की आयु 18 वर्ष से अधिक होनी चाहिए"
+  - rule: "annual_income <= 10000000"
+    error:
+      en: "Income exceeds maximum allowed limit"
+      hi: "आय अधिकतम सीमा से अधिक है"
+
+cross_field_validations:
+  - rule: "doc_income_close_to_declared"
+    description: "OCR extracted income should be within 20% of declared income"
+    severity: "WARNING"
+    error:
+      en: "Declared income differs significantly from document. Please verify."
+      hi: "घोषित आय दस्तावेज़ से काफी अलग है। कृपया जांचें।"
