@@ -1,7 +1,4 @@
-"""
-Application Management API Routes
-CRUD for applications, status tracking, service catalogue.
-"""
+import os
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -65,6 +62,8 @@ def get_application_status(application_number: str, db: Session = Depends(get_db
             "issue_date": app.certificate.issue_date.isoformat(),
         }
 
+    slots_data = repo.get_fields(app.id, decrypt=True)
+
     return {
         "application": {
             "application_number": app.application_number,
@@ -82,16 +81,22 @@ def get_application_status(application_number: str, db: Session = Depends(get_db
             "anomaly_score":  app.anomaly_score,
             "literacy_level": None,
             "citizen_ref":    app.citizen_ref,
-            "slots_data":     {},
+            "slots_data":     slots_data,
             "submitted_at":   app.submitted_at.isoformat() if app.submitted_at else None,
             "completed_at":   app.completed_at.isoformat() if app.completed_at else None,
             "created_at":     app.created_at.isoformat(),
             "certificate":    cert,
             "documents":      [
                 {
+                    "id": d.id,
                     "doc_type": d.doc_type,
-                    "filename": d.file_ref,
+                    "filename": os.path.basename(d.file_ref) if d.file_ref else "",
+                    "file_ref": f"/data/uploads/{os.path.basename(d.file_ref)}" if d.file_ref and not d.file_ref.startswith("mock") else d.file_ref,
                     "is_verified": d.verification_status == "VERIFIED",
+                    "verification_status": d.verification_status,
+                    "mismatch_fields": d.mismatch_fields,
+                    "extracted_fields": d.extracted_fields,
+                    "confidence_score": d.confidence_score,
                     "uploaded_at": d.created_at.isoformat(),
                 }
                 for d in (app.documents or [])
@@ -189,7 +194,39 @@ def update_application_status(
     }
 
 
+@router.post("/status/{application_number}/simulate-approve")
+def simulate_approve_application(application_number: str, db: Session = Depends(get_db)):
+    """Simulate government officer approval for testing/demo purposes."""
+    repo = ApplicationRepository(db)
+    app = repo.get_by_number(application_number)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    old_status = app.status
+    # Move to APPROVED
+    repo.update_status(app.id, "APPROVED")
+
+    # Write audit log
+    from app.data_layer.repositories.audit_repo import AuditRepository
+    AuditRepository(db).write(
+        event_type="STATUS_UPDATE",
+        actor="SYSTEM_SIMULATOR",
+        application_id=app.id,
+        action=f"Status auto-approved via simulator: {old_status} to APPROVED",
+        outcome="SUCCESS",
+        metadata={"application_number": application_number, "new_status": "APPROVED"},
+    )
+
+    return {
+        "application_number": application_number,
+        "old_status": old_status,
+        "new_status": "APPROVED",
+        "updated": True,
+    }
+
+
 @router.post("/validate-eligibility")
+
 def validate_eligibility_endpoint(
     service_id: str,
     slots: dict,

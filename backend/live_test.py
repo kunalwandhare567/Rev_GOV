@@ -95,11 +95,12 @@ print(f"[OK] Channel Switch WEB→MOBILE: status={cs['status']}, node={cs.get('c
 r = httpx.get(f"{BASE}/dashboard/overview")
 dash = r.json()
 print(f"\n[OK] Dashboard Overview:")
-print(f"     Active sessions: {dash['active_sessions']}")
-print(f"     Total applications: {dash['total_applications']}")
-dg_stats = dash["data_guard"]
-print(f"     Data Guard: blocks={dg_stats['blocks_today']}, allows={dg_stats['allows_today']}")
-print(f"     By service: {dash['applications_by_service']}")
+stats = dash.get("stats", {})
+print(f"     Active sessions: {stats.get('active_sessions', 0)}")
+print(f"     Total applications: {dash.get('total_applications', 0)}")
+print(f"     Data Guard: blocks={stats.get('dg_blocks_today', 0)}")
+print(f"     By service: {dash.get('by_service', {})}")
+
 
 # Service health
 r = httpx.get(f"{BASE}/dashboard/service-health")

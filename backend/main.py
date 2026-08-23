@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # Force UTF-8 on Windows to avoid cp1252 emoji encoding errors
 if hasattr(sys.stdout, "reconfigure"):
@@ -21,6 +22,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.routes import conversation, applications, dashboard, data_guard, auth
+
 
 # ─────────────────────────────────────────────
 # Logging
@@ -160,6 +162,10 @@ app.include_router(conversation.router, prefix=PREFIX)
 app.include_router(applications.router, prefix=PREFIX)
 app.include_router(dashboard.router, prefix=PREFIX)
 app.include_router(data_guard.router, prefix=PREFIX)
+
+# ── Static Files Mount ──
+app.mount("/data", StaticFiles(directory="data"), name="data")
+
 
 
 # ── Root / Health ──

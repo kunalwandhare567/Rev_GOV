@@ -82,15 +82,18 @@ class LocalNLU:
 
         return self._analyze_with_keywords(text_clean, language)
 
+    _ollama_available_cached: Optional[bool] = None
+
     def _is_ollama_available(self) -> bool:
-        if self._ollama_available is not None:
-            return self._ollama_available
+        if LocalNLU._ollama_available_cached is not None:
+            return LocalNLU._ollama_available_cached
         try:
-            resp = httpx.get(f"{self.ollama_url}/api/tags", timeout=2.0)
-            self._ollama_available = resp.status_code == 200
+            resp = httpx.get(f"{self.ollama_url}/api/tags", timeout=0.2)
+            LocalNLU._ollama_available_cached = resp.status_code == 200
         except Exception:
-            self._ollama_available = False
-        return self._ollama_available
+            LocalNLU._ollama_available_cached = False
+        return LocalNLU._ollama_available_cached
+
 
     def _analyze_with_llm(self, text: str, language: str, context: Optional[Dict]) -> Dict:
         """Call Ollama for structured intent/entity extraction."""
