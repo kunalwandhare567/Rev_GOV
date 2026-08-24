@@ -100,6 +100,11 @@ class DataClassifier:
                 elif key_lower in QUASI_IDENTIFIER_FIELDS:
                     quasi_found.append(full_path)
 
+                if isinstance(value, str):
+                    import re
+                    if re.search(r'\b\d{4}\s?\d{4}\s?\d{4}\b', value):
+                        restricted_found.append(f"{full_path}:aadhaar_number")
+
                 # Recurse into nested dicts/lists
                 if isinstance(value, (dict, list)):
                     sub_restricted, sub_quasi = cls.scan_payload(value, full_path)
@@ -111,6 +116,11 @@ class DataClassifier:
                 sub_restricted, sub_quasi = cls.scan_payload(item, f"{path}[{i}]")
                 restricted_found.extend(sub_restricted)
                 quasi_found.extend(sub_quasi)
+
+        elif isinstance(payload, str):
+            import re
+            if re.search(r'\b\d{4}\s?\d{4}\s?\d{4}\b', payload):
+                restricted_found.append("aadhaar_number")
 
         return restricted_found, quasi_found
 

@@ -53,17 +53,24 @@ STATUS_LABEL = {
 
 
 class IVRStartRequest(BaseModel):
-    call_id: str
-    caller_phone: str       # Citizen's phone number
+    call_id: Optional[str] = None
+    caller_phone: Optional[str] = None       # Citizen's phone number
+    citizen_phone: Optional[str] = None
     language: str = "en"
 
 
 class IVRInputRequest(BaseModel):
-    call_id: str
+    call_id: Optional[str] = None
+    session_id: Optional[str] = None
     input_type: str = "dtmf"  # dtmf | voice
     dtmf_key: Optional[str] = None  # "1", "2", "3", "0"
     voice_text: Optional[str] = None  # STT result
     language: str = "en"
+
+
+class IVREndRequest(BaseModel):
+    call_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @router.post("/start")
@@ -72,16 +79,19 @@ async def start_call(request: IVRStartRequest, db: Session = Depends(get_db)):
     Called when citizen presses the 'Call' button in IVR Simulator UI.
     Returns greeting audio URL and session info.
     """
+    phone = request.caller_phone or request.citizen_phone or "9876543210"
+    call_id = request.call_id or f"CALL-{str(uuid.uuid4())[:8].upper()}"
+
     # Resolve citizen by phone
     resolver = CitizenResolver(db)
-    citizen = resolver.resolve(phone=request.caller_phone)
+    citizen = resolver.resolve(phone=phone)
 
     # Create IVR session
     import hashlib
-    phone_hash = hashlib.sha256(request.caller_phone.strip().encode()).hexdigest()
+    phone_hash = hashlib.sha256(phone.strip().encode()).hexdigest()
 
     session = IVRSession(
-        call_id=request.call_id,
+        call_id=call_id,
         citizen_ref=citizen.citizen_ref if citizen else None,
         caller_phone_hash=phone_hash,
         language=request.language,
@@ -131,30 +141,33 @@ async def start_call(request: IVRStartRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "session_id": str(session.id),
+        "call_id": call_id,
+        "session_id": call_id,
         "greeting_text": greeting_text,
         "audio_url": audio_url,
-        "state": session.current_state,
-        "citizen_found": citizen is not None,
-        "application_found": app_info is not None,
-        "app_info": app_info,
+        "next_expected": "DTMF",
+        "current_state": "GREETING",
+        "language": request.language,
     }
 
 
 @router.post("/input")
-async def process_input(request: IVRInputRequest, db: Session = Depends(get_db)):
+async def receive_input(request: IVRInputRequest, db: Session = Depends(get_db)):
     """
-    Process voice/DTMF input from IVR Simulator.
-    Returns response text + audio URL.
+    Process DTMF keypress or voice input from IVR helpline.
+    Returns response audio and updated call state.
     """
-    session = db.query(IVRSession).filter(IVRSession.call_id == request.call_id).first()
+    target_id = request.call_id or request.session_id
+    session = db.query(IVRSession).filter(
+        (IVRSession.call_id == target_id) | (IVRSession.id == target_id)
+    ).first()
     if not session:
-        return {"error": "Session not found"}
+        return {"error": "Session not found", "status_code": 404}
 
     lang = request.language or session.language or "en"
 
     # Determine input
-    if request.input_type == "dtmf" and request.dtmf_key:
+    if str(request.input_type).lower() == "dtmf" and request.dtmf_key:
         user_input = request.dtmf_key
     elif request.voice_text:
         user_input = request.voice_text
@@ -185,13 +198,21 @@ async def process_input(request: IVRInputRequest, db: Session = Depends(get_db))
 
 
 @router.post("/end")
-async def end_call(call_id: str, db: Session = Depends(get_db)):
+async def end_call(
+    request: Optional[IVREndRequest] = None,
+    call_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     """End IVR session."""
-    session = db.query(IVRSession).filter(IVRSession.call_id == call_id).first()
-    if session:
-        session.call_status = "COMPLETED"
-        session.ended_at = datetime.datetime.utcnow()
-        db.commit()
+    target_id = (request.call_id if request else None) or (request.session_id if request else None) or call_id
+    if target_id:
+        session = db.query(IVRSession).filter(
+            (IVRSession.call_id == target_id) | (IVRSession.id == target_id)
+        ).first()
+        if session:
+            session.call_status = "COMPLETED"
+            session.ended_at = datetime.datetime.utcnow()
+            db.commit()
     return {"message": "Call ended. Thank you for using Revenue Gov Platform."}
 
 

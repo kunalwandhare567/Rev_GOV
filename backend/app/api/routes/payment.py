@@ -124,7 +124,7 @@ def payment_status(application_id: str, db: Session = Depends(get_db)):
     """Get payment status for an application."""
     svc = PaymentService(db)
     result = svc.get_payment_status(application_id)
-    if result["status"] == "NOT_FOUND":
+    if result.get("status") == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Application not found")
     return result
 

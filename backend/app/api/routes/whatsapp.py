@@ -36,19 +36,25 @@ _stt = STTService()
 
 
 class WhatsAppMessageRequest(BaseModel):
-    from_number: str
+    from_number: Optional[str] = None
+    citizen_identifier: Optional[str] = None
     message_type: str = "text"   # text | audio | image | document
     text: Optional[str] = None
+    message: Optional[str] = None
     language: Optional[str] = None
 
 
 class WhatsAppMessageResponse(BaseModel):
-    reply_text: str
+    reply_text: str = ""
+    response: Optional[str] = None
     reply_audio_url: Optional[str] = None
     options: list = []
     tracking_id: Optional[str] = None
     application_id: Optional[str] = None
+    session_id: Optional[str] = None
     session_node: Optional[str] = None
+    current_node: Optional[str] = None
+    consent_given: Optional[bool] = None
     language: str = "en"
 
 
@@ -61,12 +67,18 @@ async def receive_message(
     Main WhatsApp message handler.
     Phase 6: Auto-detects language on first message.
     """
-    channel_msg = _adapter.normalize_inbound(request.dict())
+    req_dict = request.dict()
+    if not req_dict.get("from_number") and req_dict.get("citizen_identifier"):
+        req_dict["from_number"] = req_dict["citizen_identifier"]
+    if not req_dict.get("text") and req_dict.get("message"):
+        req_dict["text"] = req_dict["message"]
+    channel_msg = _adapter.normalize_inbound(req_dict)
 
     # 1. Resolve citizen
+    from_num = request.from_number or request.citizen_identifier or req_dict.get("from_number") or "unknown"
     resolver = CitizenResolver(db)
     citizen = resolver.create_or_resolve_whatsapp(
-        request.from_number,
+        from_num,
         language=request.language or "en"
     )
 
@@ -105,12 +117,18 @@ async def receive_message(
     if result.get("application_id"):
         app_repo.update_last_channel(result["application_id"], Channel.WHATSAPP.value)
 
+    reply_text = result.get("response", "")
     return WhatsAppMessageResponse(
-        reply_text=result.get("response", ""),
+        reply_text=reply_text,
+        response=reply_text,
+        reply_audio_url=result.get("reply_audio_url"),
         options=result.get("options", []),
         tracking_id=result.get("tracking_id"),
         application_id=result.get("application_id"),
+        session_id=session.id,
         session_node=session.current_node,
+        current_node=session.current_node,
+        consent_given=session.consent_given,
         language=lang,
     )
 

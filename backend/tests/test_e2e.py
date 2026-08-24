@@ -14,11 +14,13 @@ from app.core.database import get_db
 import main as main_app
 
 
+from sqlalchemy.pool import StaticPool
+
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def engine():
-    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(eng)
     yield eng
     eng.dispose()

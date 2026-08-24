@@ -24,8 +24,10 @@ from typing import List, Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Path to knowledge base directory
-KNOWLEDGE_DIR = Path(__file__).parent.parent.parent.parent / "knowledge"
+# Path to knowledge base directory (checks backend/knowledge and root knowledge)
+_backend_knowledge = Path(__file__).resolve().parent.parent.parent / "knowledge"
+_root_knowledge = Path(__file__).resolve().parent.parent.parent.parent / "knowledge"
+KNOWLEDGE_DIR = _backend_knowledge if _backend_knowledge.exists() else _root_knowledge
 
 
 class KnowledgeChunk:

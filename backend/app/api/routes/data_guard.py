@@ -70,8 +70,12 @@ def test_data_guard(req: DataGuardTestRequest, db: Session = Depends(get_db)):
         }
 
 
+from fastapi import APIRouter, Depends, Body
+
+# ... (keep other imports)
+
 @router.post("/classify")
-def classify_payload(payload: Any, db: Session = Depends(get_db)):
+def classify_payload(payload: Any = Body(...), db: Session = Depends(get_db)):
     """Classify all fields in a payload by data sensitivity level."""
     restricted, quasi = DataClassifier.scan_payload(payload)
     all_fields = list(set(restricted + quasi))
@@ -82,7 +86,10 @@ def classify_payload(payload: Any, db: Session = Depends(get_db)):
             if key.lower() not in [f.lower() for f in all_fields]:
                 non_sensitive.append(key)
 
+    classification = "RESTRICTED" if restricted else ("QUASI_IDENTIFIER" if quasi else "NON_SENSITIVE")
     return {
+        "classification": classification,
+        "blocked_fields": restricted,
         "restricted_fields": restricted,
         "quasi_identifier_fields": quasi,
         "non_sensitive_fields": non_sensitive,

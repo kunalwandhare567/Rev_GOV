@@ -242,11 +242,53 @@ def root():
 
 
 @app.get("/health", tags=["health"])
+@app.get(f"{PREFIX}/health", tags=["health"])
 def health_check():
     return {
         "status": "healthy",
         "database": "sqlite",
         "data_guard": "active",
+        "llm_provider": settings.LLM_PROVIDER,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/health/llm", tags=["health"])
+@app.get(f"{PREFIX}/health/llm", tags=["health"])
+def health_llm():
+    """Report LLM health status without exposing API keys."""
+    try:
+        from app.llm.provider_factory import get_provider
+        provider = get_provider()
+        return {
+            "status": "healthy",
+            "provider": provider.provider_name,
+            "model": provider.model_name,
+            "configured": True,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return SafeJSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "provider": settings.LLM_PROVIDER,
+                "error": str(e),
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+            }
+        )
+
+
+@app.get("/health/ocr", tags=["health"])
+@app.get(f"{PREFIX}/health/ocr", tags=["health"])
+def health_ocr():
+    """Report Tesseract OCR availability, executable path, and supported languages."""
+    from app.services.ocr_service import OCRService
+    ocr = OCRService()
+    status_info = ocr.get_health_status()
+    return {
+        "status": "healthy" if status_info["available"] else "degraded",
+        **status_info,
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 

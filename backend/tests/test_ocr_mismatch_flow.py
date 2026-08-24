@@ -17,15 +17,15 @@ def test_ocr_mismatch_detection_when_declared_details_differ():
     """
     Full OCR mismatch pipeline test.
     Citizen declares 'Wrong Declared Name' in chat.
-    Document OCR extracts 'Kunal Wandhare'.
-    Expects MISMATCH status with applicant_name in mismatch_fields.
     """
-    from app.core.database import SessionLocal
+    from app.core.database import SessionLocal, Base, engine
+    Base.metadata.create_all(bind=engine)
     db_session = SessionLocal()
     try:
         # 1. Setup citizen
         c_repo = CitizenRepository(db_session)
         citizen = c_repo.resolve_or_create("test_mismatch_user@example.com", preferred_channel="WEB")
+        db_session.commit()
 
         # 2. Create application
         app_repo = ApplicationRepository(db_session)

@@ -4,7 +4,10 @@ Integration test for the full conversation flow using TestClient.
 import pytest
 from fastapi.testclient import TestClient
 from main import app
+from app.models.db_models import Base
+from app.core.database import engine
 
+Base.metadata.create_all(bind=engine)
 client = TestClient(app)
 
 
@@ -50,7 +53,8 @@ def test_data_guard_allows_safe_payload():
 
 def test_full_conversation_flow():
     """Simulate a complete income certificate application journey."""
-    user_id = "test_integration_user_001"
+    import uuid
+    user_id = f"test_flow_{uuid.uuid4().hex[:8]}"
     lang = "en"
 
     # Step 1: Init → Consent prompt
@@ -87,7 +91,8 @@ def test_full_conversation_flow():
 
 def test_channel_switch():
     """Test seamless channel switch from WEB to MOBILE."""
-    user_id = "test_channel_switch_002"
+    import uuid
+    user_id = f"test_switch_{uuid.uuid4().hex[:8]}"
 
     # Start session on WEB
     client.post("/api/v1/conversation/message", json={

@@ -67,12 +67,73 @@ class ConversationOrchestrator:
         self.app_repo = ApplicationRepository(db)
         self.citizen_repo = CitizenRepository(db)
         self.audit_repo = AuditRepository(db)
-        # Phase 5: NextQuestionEngine for dynamic slot ordering
         from app.services.next_question_engine import NextQuestionEngine
         self.next_q_engine = NextQuestionEngine()
-        # Phase 4+6: RAG service for knowledge-grounded answers
         from app.services.rag_service import RAGService
         self.rag = RAGService()
+        from app.models.db_models import ConversationMessage
+        self.ConversationMessage = ConversationMessage
+
+    def _build_conversation_context(self, session: ConversationSession) -> Dict[str, Any]:
+        """
+        Build unified conversation and application context.
+        Includes citizen identity, active application meta, filled fields,
+        pending slot, OCR data, and recent conversation turns.
+        """
+        app = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+        spec = ServiceSpecLoader.get(app.service_id) if app else None
+
+        # Load recent message history (last 8 messages)
+        recent_msgs = (
+            self.db.query(self.ConversationMessage)
+            .filter(self.ConversationMessage.session_id == session.id)
+            .order_by(self.ConversationMessage.created_at.desc())
+            .limit(8)
+            .all()
+        )
+        history_list = [
+            {"role": m.role.lower(), "content": m.content}
+            for m in reversed(recent_msgs)
+        ]
+
+        # Gather uploaded document summaries
+        docs_summary = []
+        if app and app.documents:
+            for d in app.documents:
+                docs_summary.append({
+                    "doc_type": d.doc_type,
+                    "verification_status": d.verification_status,
+                    "overall_match_score": d.overall_match_score,
+                    "extracted_fields": d.extracted_fields or {},
+                })
+
+        # Load all filled fields (merging session + database records)
+        filled_data = dict(session.filled_slots or {})
+        if app:
+            db_fields = self.app_repo.get_fields(app.id, decrypt=True) or {}
+            filled_data.update(db_fields)
+
+        service_name = None
+        if spec:
+            service_name = spec.name.get(session.language, spec.name.get("en", spec.id)) if isinstance(spec.name, dict) else str(spec.name)
+
+        return {
+            "citizen_ref": session.citizen_ref,
+            "tracking_id": (app.tracking_id or app.application_number) if app else None,
+            "application_id": app.id if app else None,
+            "service_type": app.service_id if app else None,
+            "service_name": service_name,
+            "language": session.language,
+            "current_node": session.current_node,
+            "application_state": app.status if app else session.current_node,
+            "filled_slots": filled_data,
+            "pending_field": getattr(session, "pending_field", None),
+            "pending_question": getattr(session, "pending_question", None),
+            "conversation_history": history_list,
+            "uploaded_documents": docs_summary,
+            "ocr_fields": getattr(session, "ocr_fields", {}) or {},
+            "validation_errors": session.validation_errors or [],
+        }
 
     def process_message(
         self,
@@ -107,34 +168,31 @@ class ConversationOrchestrator:
         if language and language != session.language:
             session.language = language
 
-        # 2. Run NLU (NLUService — LLM-powered, no Ollama)
-        nlu_result = self.nlu.analyze(text, language=session.language, context={
-            "current_node": session.current_node,
-            "filled_slots": session.filled_slots,
-            "service_id": getattr(session, "application_id", None),
-        })
+        # 2. Build structured conversation and application context
+        conv_context = self._build_conversation_context(session)
 
-        # Phase 5: Enrich with IntentClassifier (richer keyword scoring)
+        # 3. Run NLU (NLUService with full persistent context)
+        nlu_result = self.nlu.analyze(text, language=session.language, context=conv_context)
+
+        # Enrich with IntentClassifier
         clf_result = self.intent_clf.classify(
             text, language=session.language,
             conversation_state=session.current_node,
         )
-        # Merge: prefer IntentClassifier if confidence > 0.5, else use LocalNLU
         if clf_result.get("confidence", 0) > 0.5:
             nlu_result["intent"] = clf_result["intent"]
             nlu_result["service_type"] = self._normalize_service_id(
                 clf_result.get("service_type") or nlu_result.get("service_type"), text
             )
-            # Merge entities
             nlu_result.setdefault("entities", {}).update(clf_result.get("entities", {}))
 
-        # Phase 5: Check FAQ if ASK_HELP intent
+        # Check FAQ if ASK_HELP intent
         if nlu_result.get("intent") == "ASK_HELP":
             faq_answer = self.qa_handler.answer(text, session.language)
             if faq_answer:
                 nlu_result["faq_answer"] = faq_answer
 
-        # 3. Update literacy level from NLU
+        # Update literacy level from NLU
         detected_literacy = nlu_result.get("literacy_level", "MEDIUM")
         if detected_literacy != session.literacy_level:
             session.literacy_level = detected_literacy
@@ -447,7 +505,22 @@ class ConversationOrchestrator:
                     session.missing_slots = [s for s in session.missing_slots if s != key]
 
         fee_result = FeeCalculator.calculate(spec, session.filled_slots)
-        service_name = spec.name.get(session.language, spec.name.get("en", service_type))
+        service_name = spec.name.get(session.language, spec.name.get("en", service_type)) if isinstance(spec.name, dict) else str(spec.name)
+
+        # Determine initial slot question
+        nq_init = self.next_q_engine.get_next_slot(
+            service_id=service_type,
+            filled_slots=session.filled_slots or {},
+            ocr_fields=getattr(session, "ocr_fields", {}) or {},
+        )
+        if nq_init.has_next:
+            session.pending_field = nq_init.slot_name
+            initial_slot_prompt = self._get_next_slot_prompt_llm(session, spec, nq_init)
+            session.pending_question = initial_slot_prompt
+        else:
+            session.pending_field = None
+            session.pending_question = None
+            initial_slot_prompt = "All details collected."
 
         msg = self._multilang_msg(session.language, {
             "en": (
@@ -455,18 +528,18 @@ class ConversationOrchestrator:
                 f"📋 Application No: {app.application_number}\n"
                 f"💰 Fee: ₹{fee_result.final_fee:.0f} (Base: ₹{fee_result.base_fee:.0f})\n"
                 f"⏱ SLA: {spec.sla_days} working days\n\n"
-                f"Let's collect your details. {self._get_next_slot_prompt(session, spec)}"
+                f"Let's collect your details. {initial_slot_prompt}"
             ),
             "hi": (
                 f"✅ {service_name} के लिए आवेदन शुरू हो रहा है\n"
                 f"📋 आवेदन संख्या: {app.application_number}\n"
                 f"💰 शुल्क: ₹{fee_result.final_fee:.0f}\n"
                 f"⏱ SLA: {spec.sla_days} कार्य दिवस\n\n"
-                f"अब आपकी जानकारी लेते हैं। {self._get_next_slot_prompt(session, spec)}"
+                f"अब आपकी जानकारी लेते हैं। {initial_slot_prompt}"
             ),
         })
 
-        return msg, "SLOT_FILLING", {"application_id": app.id, "application_number": app.application_number}
+        return msg, "SLOT_FILLING", {"application_id": app.id, "application_number": app.application_number, "next_slot": session.pending_field}
 
     def _handle_slot_filling(self, session, nlu_result, raw_text):
         """SLOT_FILLING: Iteratively collect required form fields.
@@ -584,17 +657,23 @@ class ConversationOrchestrator:
                         "\n".join([f"\ud83d\udcc4 {d.get('type', d) if isinstance(d, dict) else d}" for d in spec.required_docs])
                     ),
                 })
+                session.pending_field = None
+                session.pending_question = None
                 return msg, "DOCUMENT_CAPTURE", {
                     "completion_pct": nq_result.completion_percentage,
                     "filled_count": nq_result.filled_count,
                 }
             else:
+                session.pending_field = None
+                session.pending_question = None
                 return self._handle_validation(session)
 
-        # More slots — generate next question via LLM (Phase 5)
+        # More slots — generate next question via LLM
         next_slot_prompt = self._get_next_slot_prompt_llm(
             session, spec, nq_result
         )
+        session.pending_field = nq_result.slot_name
+        session.pending_question = next_slot_prompt
         progress_note = f" ({nq_result.filled_count}/{nq_result.total_required} fields)"
 
         return (

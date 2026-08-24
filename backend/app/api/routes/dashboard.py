@@ -18,6 +18,7 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/overview")
+@router.get("/stats")
 def get_dashboard_overview(db: Session = Depends(get_db)):
     """
     Main dashboard metrics:

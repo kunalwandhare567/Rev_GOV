@@ -8,7 +8,7 @@ If the required API key is missing, the server will REFUSE TO START with a clear
 There is no automatic fallback between providers.
 """
 import json
-from typing import List, Optional
+from typing import List, Optional, Any, Union
 from pydantic_settings import BaseSettings
 from pydantic import field_validator, model_validator
 
@@ -20,14 +20,14 @@ class Settings(BaseSettings):
     APP_NAME: str = "Multilingual AI-Powered Citizen Revenue Services Platform"
     APP_VERSION: str = "3.0.0"
     DEBUG: bool = False
-    SECRET_KEY: str
+    SECRET_KEY: str = "revenue-services-dev-secret-key-change-in-production"
 
     # Database
     DATABASE_URL: str = "sqlite:///./revenue_services.db"
 
     # API
     API_V1_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: List[str] = [
+    CORS_ORIGINS: Any = [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:5174",
@@ -38,23 +38,25 @@ class Settings(BaseSettings):
     ]
 
     # ─────────────────────────────────────────────
-    # LLM Provider — ONE of: gemini | groq | openrouter
+    # LLM Provider — ONE of: openrouter | gemini | groq
     # No Ollama. No phi3:mini. No local LLM.
     # No automatic fallback between providers.
     # ─────────────────────────────────────────────
-    LLM_PROVIDER: str = "gemini"
+    LLM_PROVIDER: str = "openrouter"
 
-    # Gemini (recommended for POC — free tier available)
+    # OpenRouter (Primary default — 200+ models via single API key)
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_MODEL: str = "openrouter/auto"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MAX_TOKENS: int = 1000
+
+    # Gemini (free tier available)
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Groq (extremely fast, Llama 3, free tier available)
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama3-8b-8192"
-
-    # OpenRouter (200+ models via single API key)
-    OPENROUTER_API_KEY: Optional[str] = None
-    OPENROUTER_MODEL: str = "meta-llama/llama-3.1-8b-instruct:free"
 
     # ASR/TTS
     ASR_PROVIDER: str = "mock"
@@ -87,7 +89,8 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "Admin@123"
 
-    # OCR
+    # OCR Configuration
+    TESSERACT_CMD: Optional[str] = None
     TESSERACT_PATH: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
     # Service specs directory
@@ -114,7 +117,11 @@ class Settings(BaseSettings):
         NO silent fallback. NO provider switching.
         """
         p = self.LLM_PROVIDER.lower()
-        supported = ("gemini", "groq", "openrouter")
+        if p in ("openai_compatible", "open_router"):
+            p = "openrouter"
+            self.LLM_PROVIDER = "openrouter"
+
+        supported = ("openrouter", "gemini", "groq")
 
         if p not in supported:
             raise ValueError(
@@ -122,6 +129,13 @@ class Settings(BaseSettings):
                 f"Supported providers: {', '.join(supported)}\n"
                 f"Set LLM_PROVIDER in your .env file."
             )
+
+        if p == "openrouter":
+            if not self.OPENROUTER_API_KEY or "your_key" in self.OPENROUTER_API_KEY:
+                raise ValueError(
+                    "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set or contains placeholder.\n"
+                    "Get a key at: https://openrouter.ai"
+                )
 
         if p == "gemini":
             if not self.GEMINI_API_KEY or "replace_with_real_key" in self.GEMINI_API_KEY:
@@ -136,15 +150,13 @@ class Settings(BaseSettings):
                 "Get a free API key at: https://console.groq.com"
             )
 
-        if p == "openrouter" and not self.OPENROUTER_API_KEY:
-            raise ValueError(
-                "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.\n"
-                "Get a free API key at: https://openrouter.ai"
-            )
-
         return self
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {
+        "env_file": [".env", "backend/.env", "../.env"],
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 settings = Settings()
