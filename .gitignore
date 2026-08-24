@@ -18,8 +18,11 @@ __pycache__/
 
 # Databases & local state
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+.coverage
 
 # IDE & OS files
 .vscode/

@@ -90,9 +90,38 @@
 .footerLinks a { font-size: var(--text-sm); color: rgba(255,255,255,0.5); transition: color var(--ease-fast); }
 .footerBottom { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4); font-size: var(--text-xs); color: rgba(255,255,255,0.25); }
 
+
+/* ── Multi-Channel Section ── */
+.channelSection { padding: var(--sp-20) 0; background: var(--clr-dark-900); }
+.channelCards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-5); }
+.channelCard {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  background: var(--ch-bg, rgba(255,255,255,0.04));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-xl);
+  padding: var(--sp-6);
+  text-decoration: none;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+.channelCard::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--ch-bg, rgba(255,255,255,0.02));
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.channelCard:hover { transform: translateY(-6px); box-shadow: 0 12px 40px rgba(0,0,0,0.3); border-color: var(--ch-color, rgba(255,255,255,0.2)); }
+.channelCard:hover::before { opacity: 1; }
+.channelCardIcon { font-size: 36px; margin-bottom: var(--sp-2); }
+.channelCardTitle { font-size: var(--text-lg); font-weight: var(--fw-bold); color: var(--ch-color, #fff); }
+.channelCardDesc { font-size: var(--text-sm); color: rgba(255,255,255,0.55); line-height: 1.5; }
+
 @media (max-width: 768px) {
   .hero { padding: var(--sp-12) var(--sp-4); flex-direction: column; }
   .heroChatPreview { display: none; }
   .sectionInner { padding: 0 var(--sp-4); }
-  .servicesSection, .howSection, .dataGuardSection { padding: var(--sp-12) 0; }
+  .servicesSection, .howSection, .dataGuardSection, .channelSection { padding: var(--sp-12) 0; }
 }
+

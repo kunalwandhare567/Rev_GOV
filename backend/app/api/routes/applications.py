@@ -158,9 +158,10 @@ def update_application_status(
     body: StatusUpdateRequest,
     db: Session = Depends(get_db),
 ):
-    """Update application status (officer action)."""
+    """Update application status (officer action). Broadcasts via SSE."""
     status = body.status
-    valid_statuses = ["UNDER_REVIEW", "APPROVED", "REJECTED", "ESCALATED"]
+    valid_statuses = ["UNDER_REVIEW", "APPROVED", "REJECTED", "ESCALATED",
+                      "PAYMENT_COMPLETED", "SUBMITTED_FOR_VERIFICATION", "CERTIFICATE_READY"]
     if status not in valid_statuses:
         raise HTTPException(
             status_code=400,
@@ -186,6 +187,24 @@ def update_application_status(
         metadata={"application_number": application_number, "new_status": status, "note": body.note},
     )
 
+    # ── Phase 12: Broadcast SSE event to all connected clients ──
+    try:
+        from app.core.events import broadcast_status_change
+        PROGRESS_MAP = {
+            "UNDER_REVIEW": 60, "APPROVED": 100, "REJECTED": 100,
+            "ESCALATED": 65, "PAYMENT_COMPLETED": 85,
+            "SUBMITTED_FOR_VERIFICATION": 90, "CERTIFICATE_READY": 100,
+        }
+        broadcast_status_change(
+            application_id=app.id,
+            new_status=status,
+            progress=PROGRESS_MAP.get(status),
+            channel="OFFICER_WEB",
+            tracking_id=app.tracking_id,
+        )
+    except Exception as e:
+        logger.warning(f"SSE broadcast failed (non-critical): {e}")
+
     return {
         "application_number": application_number,
         "old_status": old_status,
@@ -203,10 +222,8 @@ def simulate_approve_application(application_number: str, db: Session = Depends(
         raise HTTPException(status_code=404, detail="Application not found")
 
     old_status = app.status
-    # Move to APPROVED
     repo.update_status(app.id, "APPROVED")
 
-    # Write audit log
     from app.data_layer.repositories.audit_repo import AuditRepository
     AuditRepository(db).write(
         event_type="STATUS_UPDATE",
@@ -216,6 +233,13 @@ def simulate_approve_application(application_number: str, db: Session = Depends(
         outcome="SUCCESS",
         metadata={"application_number": application_number, "new_status": "APPROVED"},
     )
+
+    # ── Phase 12: SSE broadcast ──
+    try:
+        from app.core.events import broadcast_status_change
+        broadcast_status_change(app.id, "APPROVED", 100, "SYSTEM", app.tracking_id)
+    except Exception as e:
+        logger.warning(f"SSE broadcast failed: {e}")
 
     return {
         "application_number": application_number,

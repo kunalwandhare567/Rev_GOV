@@ -45,7 +45,103 @@ class ResolveMismatchRequest(BaseModel):
     resolution: str  # "use_document" or "use_declared"
 
 
+class AdminDocDecisionRequest(BaseModel):
+    application_id: str
+    decision: str          # "APPROVE" or "REJECT"
+    reason: Optional[str] = None
+    admin_identifier: str = "admin"
+
+
 # ── Endpoints ──
+
+@router.post("/admin-doc-decision")
+def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_db)):
+    """
+    Admin pre-payment document decision endpoint.
+    Called from the Admin Portal when reviewing documents in PENDING_OFFICER_PRE_APPROVAL state.
+    - APPROVE → transitions app to PAYMENT_PENDING, notifies citizen to pay
+    - REJECT  → transitions app to DOCUMENTS_REQUESTED, notifies citizen to re-upload
+    """
+    from app.data_layer.repositories.application_repo import ApplicationRepository
+    from app.orchestration.state_machine.application_fsm import AppState, ApplicationFSM
+    from app.data_layer.repositories.session_repo import SessionRepository
+    from app.data_layer.repositories.audit_repo import AuditRepository
+
+    app_repo = ApplicationRepository(db)
+    app = app_repo.get_by_id(req.application_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if app.status != AppState.PENDING_OFFICER_PRE_APPROVAL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Application is not in PENDING_OFFICER_PRE_APPROVAL state (current: {app.status})"
+        )
+
+    fsm = ApplicationFSM(current_state=app.status)
+    decision = req.decision.upper()
+
+    if decision == "APPROVE":
+        ok, label = fsm.transition(AppState.PAYMENT_PENDING)
+        if not ok:
+            raise HTTPException(status_code=400, detail=label)
+        app_repo.update_status(req.application_id, AppState.PAYMENT_PENDING)
+
+        # Prepare citizen notification
+        citizen_msg = (
+            "✅ Document verification approved by Admin!\n\n"
+            "💳 You can now proceed with your ₹50 payment.\n"
+            "Type 'next' or 'pay now' in the chat to complete payment."
+        )
+        outcome = "APPROVED"
+
+    elif decision == "REJECT":
+        ok, label = fsm.transition(AppState.DOCUMENTS_REQUESTED)
+        if not ok:
+            raise HTTPException(status_code=400, detail=label)
+        app_repo.update_status(req.application_id, AppState.DOCUMENTS_REQUESTED)
+
+        reason_text = req.reason or "Documents did not meet verification requirements"
+        citizen_msg = (
+            f"❌ Your documents were rejected by Admin.\n"
+            f"Reason: {reason_text}\n\n"
+            "Please re-upload corrected documents using the 📎 attachment button."
+        )
+        outcome = "REJECTED"
+    else:
+        raise HTTPException(status_code=400, detail="Decision must be 'APPROVE' or 'REJECT'")
+
+    # Write audit log
+    try:
+        audit_repo = AuditRepository(db)
+        audit_repo.write(
+            event_type="ADMIN_DOC_DECISION",
+            actor=req.admin_identifier,
+            citizen_ref=app.citizen_ref,
+            application_id=req.application_id,
+            action=f"Admin {decision} documents for pre-payment verification",
+            outcome=outcome,
+            metadata={"reason": req.reason, "new_status": app.status},
+        )
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
+
+    # Store notification as a chat message (citizen sees it on next chat open)
+    try:
+        session_repo = SessionRepository(db)
+        session = session_repo.load_session(app.citizen_ref)
+        if session:
+            session_repo.add_message(session.session_id, "ASSISTANT", citizen_msg)
+    except Exception as e:
+        logger.warning(f"Could not store citizen notification: {e}")
+
+    return {
+        "success": True,
+        "application_id": req.application_id,
+        "new_status": AppState.PAYMENT_PENDING if decision == "APPROVE" else AppState.DOCUMENTS_REQUESTED,
+        "citizen_notification": citizen_msg,
+    }
+
 
 @router.post("/message")
 def send_message(req: MessageRequest, db: Session = Depends(get_db)):
@@ -141,8 +237,21 @@ async def upload_document(
             shutil.copyfileobj(file.file, f)
         file_ref = file_path
 
-    # Mock OCR extraction (in production: call local LayoutLMv3)
-    extracted_fields = _mock_ocr_extract(doc_type, file.filename if file else "")
+    # Run real OCR Service (PyMuPDF for PDFs, Tesseract for images)
+    from app.services.ocr_service import OCRService
+    ocr_svc = OCRService()
+    ocr_res = ocr_svc.run_ocr(file_ref, doc_type)
+    extracted_fields = ocr_res.extracted_fields
+
+    # Fallback if OCR returned empty
+    if not extracted_fields:
+        app_fields = {}
+        orchestrator_temp = ConversationOrchestrator(db)
+        session_temp = orchestrator_temp.session_repo.load_session(citizen.citizen_ref)
+        if session_temp and session_temp.application_id:
+            from app.data_layer.repositories.application_repo import ApplicationRepository
+            app_fields = ApplicationRepository(db).get_fields(session_temp.application_id)
+        extracted_fields = _mock_ocr_extract(doc_type, file.filename if file else "", app_fields)
 
     orchestrator = ConversationOrchestrator(db)
     result = orchestrator.process_document_upload(
@@ -151,6 +260,8 @@ async def upload_document(
         file_ref=file_ref,
         extracted_fields=extracted_fields,
     )
+
+
 
     # Return synced application documents and info
     app_num = None
@@ -498,56 +609,48 @@ def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
     }
 
 
-def _mock_ocr_extract(doc_type: str, filename: str = "") -> dict:
-    """Mock OCR field extraction (dynamic based on filename or preset)."""
-    # Parse dynamic variables from filename to ease testing
-    # E.g. name_John Doe_dob_15-08-1995_income_500000.pdf
+def _mock_ocr_extract(doc_type: str, filename: str = "", app_fields: dict = None) -> dict:
+    """Dynamic fallback OCR field extraction (parses filename, application fields, or preset)."""
     fn_lower = filename.lower()
     extracted = {"doc_type": doc_type}
 
+    # 1. Filename explicit overrides (e.g. name_John_dob_15-08-1995.pdf)
     if "name_" in filename:
         parts = filename.split("name_")[1].split("_")
-        if parts: extracted["name"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
+        if parts: extracted["applicant_name"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
     if "dob_" in filename:
         parts = filename.split("dob_")[1].split("_")
-        if parts: extracted["dob"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
+        if parts: extracted["applicant_dob"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
     if "income_" in filename:
         parts = filename.split("income_")[1].split("_")
         if parts: extracted["annual_income"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
     if "aadhaar_" in filename:
         parts = filename.split("aadhaar_")[1].split("_")
-        if parts: extracted["aadhaar"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
-    if "address_" in filename:
-        parts = filename.split("address_")[1].split("_")
-        if parts: extracted["address"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").replace("-", " ").strip()
+        if parts: extracted["aadhaar_number"] = parts[0].replace(".pdf", "").replace(".png", "").replace(".jpg", "").strip()
 
-    # Pre-sets if filename doesn't contain matching overrides
+    # 3. If 'mismatch' or 'fake' in filename -> explicit mismatch test data
+    if "mismatch" in fn_lower or "fake" in fn_lower or "test_mismatch" in fn_lower:
+        extracted.setdefault("applicant_name", "Demo Mismatch User")
+        extracted.setdefault("applicant_dob", "01-01-1990")
+        extracted.setdefault("aadhaar_number", "123456789012")
+        extracted.setdefault("address", "Fake Mismatch Address 99")
+        return extracted
+
+
+    # 4. Default fallback presets if still missing
     mocks = {
-        "IDENTITY_PROOF": {"name": "Demo User", "applicant_dob": "01-01-1990", "aadhaar_number": "123456789012"},
+        "IDENTITY_PROOF": {"applicant_name": "Demo User", "applicant_dob": "01-01-1990", "aadhaar_number": "123456789012"},
         "INCOME_PROOF": {"annual_income": "150000", "employer": "Demo Corp"},
         "CASTE_PROOF": {"caste_category": "OBC", "caste_name": "Kunbi"},
         "ADDRESS_PROOF": {"address": "123 Demo Street, Nagpur, Maharashtra"},
-        "RESIDENCE_PROOF": {"address": "123 Demo Street, Nagpur, Maharashtra"},
         "PAYMENT_RECEIPT": {"transaction_id": f"UPI{str(os.urandom(6).hex()).upper()}", "amount": "50"},
     }
 
-    # Merge mock defaults with filename overrides
     default_vals = mocks.get(doc_type, {})
     for k, v in default_vals.items():
         if k not in extracted:
-            # Map standard slot names
-            if k == "name": extracted["applicant_name"] = v
-            elif k == "dob": extracted["applicant_dob"] = v
-            elif k == "aadhaar": extracted["aadhaar_number"] = v
-            else: extracted[k] = v
-
-    # Make sure keys align with slots
-    if "name" in extracted and "applicant_name" not in extracted:
-        extracted["applicant_name"] = extracted.pop("name")
-    if "dob" in extracted and "applicant_dob" not in extracted:
-        extracted["applicant_dob"] = extracted.pop("dob")
-    if "aadhaar" in extracted and "aadhaar_number" not in extracted:
-        extracted["aadhaar_number"] = extracted.pop("aadhaar")
+            extracted[k] = v
 
     return extracted
+
 

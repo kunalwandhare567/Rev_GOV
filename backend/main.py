@@ -22,6 +22,8 @@ if hasattr(sys.stderr, "reconfigure"):
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.routes import conversation, applications, dashboard, data_guard, auth
+from app.api.routes import whatsapp, ivr, tracking, documents, payment, stream
+from app.core.security import SecurityMiddleware
 
 
 # ─────────────────────────────────────────────
@@ -55,9 +57,16 @@ async def lifespan(app: FastAPI):
     logger.info(f"✅ Service specs loaded: {list(specs.keys())}")
 
     # Create required storage directories
-    for path in [settings.STORAGE_PATH, settings.RECEIPT_PATH, settings.CERTIFICATE_PATH, settings.AUDIO_PATH]:
+    for path in [
+        settings.STORAGE_PATH, settings.RECEIPT_PATH,
+        settings.CERTIFICATE_PATH, settings.AUDIO_PATH,
+        "data/audio/ivr",          # IVR TTS audio
+        "data/audio/whatsapp",     # WhatsApp TTS/voice
+        "data/uploads",            # Document uploads
+        "data/ocr_cache",          # OCR result cache
+    ]:
         os.makedirs(path, exist_ok=True)
-    logger.info("✅ Storage directories ready")
+    logger.info("Storage directories ready")
 
     # Seed database if empty
     _seed_database()
@@ -145,6 +154,7 @@ app = FastAPI(
 
 # ── Middleware ──
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(SecurityMiddleware)         # ← Phase 14: rate limiting + security headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -162,6 +172,16 @@ app.include_router(conversation.router, prefix=PREFIX)
 app.include_router(applications.router, prefix=PREFIX)
 app.include_router(dashboard.router, prefix=PREFIX)
 app.include_router(data_guard.router, prefix=PREFIX)
+
+# ── NEW Omnichannel Routes ──
+app.include_router(whatsapp.router, prefix=PREFIX)   # WhatsApp Clone UI
+app.include_router(ivr.router, prefix=PREFIX)        # IVR Phone Simulator
+app.include_router(tracking.router, prefix=PREFIX)   # Public Tracking Lookup
+app.include_router(documents.router, prefix=PREFIX)  # Documents + fields + resolve
+
+# ── Phase 11-12 Routes ──
+app.include_router(payment.router, prefix=PREFIX)    # Payment initiate + receipt verify
+app.include_router(stream.router, prefix=PREFIX)     # SSE real-time events
 
 # ── Static Files Mount ──
 app.mount("/data", StaticFiles(directory="data"), name="data")

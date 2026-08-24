@@ -1,6 +1,7 @@
 """
 Application Repository
 CRUD for applications, application data (encrypted), documents, payments.
+Extended for omnichannel: tracking_id, field provenance, progress, cross-channel.
 """
 import uuid
 import datetime
@@ -18,18 +19,47 @@ from app.data_guard.guard import DataClassifier
 logger = logging.getLogger(__name__)
 
 
+# Tracking ID prefix per service
+SERVICE_TRACKING_PREFIXES = {
+    "income_certificate": "INC",
+    "caste_certificate": "CAS",
+    "domicile_certificate": "DOM",
+    "obc_ncl_certificate": "NCL",
+    "age_certificate": "AGE",
+    "birth_certificate": "BRT",
+    "death_certificate": "DTH",
+    "character_certificate": "CHR",
+    "ration_card": "RAT",
+    "land_record": "LND",
+}
+
+APPLICATION_PREFIXES = {
+    "income_certificate": "IC",
+    "caste_certificate": "CC",
+    "obc_ncl_certificate": "OBC",
+    "domicile_certificate": "DC",
+}
+
+
 def _gen_application_number(service_id: str) -> str:
     """Generate human-readable application number."""
-    prefix_map = {
-        "income_certificate": "IC",
-        "caste_certificate": "CC",
-        "obc_ncl_certificate": "OBC",
-        "domicile_certificate": "DC",
-    }
-    prefix = prefix_map.get(service_id, "APP")
+    prefix = APPLICATION_PREFIXES.get(service_id, "APP")
     now = datetime.datetime.utcnow()
     uid = str(uuid.uuid4())[:6].upper()
     return f"APP-{prefix}-{now.year}-{uid}"
+
+
+def _gen_tracking_id(service_id: str, db: Session) -> str:
+    """Generate unique tracking ID: e.g. INC-2026-000001"""
+    prefix = SERVICE_TRACKING_PREFIXES.get(service_id, "APP")
+    year = datetime.datetime.utcnow().year
+    # Count apps of this service this year for sequential numbering
+    count = db.query(Application).filter(
+        Application.service_id == service_id,
+        Application.tracking_id.isnot(None),
+    ).count()
+    seq = count + 1
+    return f"{prefix}-{year}-{seq:06d}"
 
 
 class ApplicationRepository:
@@ -53,6 +83,8 @@ class ApplicationRepository:
             channel_origin=channel_origin,
             language=language,
         )
+        # Generate tracking ID immediately
+        app.tracking_id = _gen_tracking_id(service_id, self.db)
         self.db.add(app)
         self.db.commit()
         self.db.refresh(app)
@@ -61,9 +93,18 @@ class ApplicationRepository:
     def get_by_id(self, application_id: str) -> Optional[Application]:
         return self.db.query(Application).filter(Application.id == application_id).first()
 
+    # alias for compatibility
+    def get(self, application_id: str) -> Optional[Application]:
+        return self.get_by_id(application_id)
+
     def get_by_number(self, application_number: str) -> Optional[Application]:
         return self.db.query(Application).filter(
             Application.application_number == application_number
+        ).first()
+
+    def get_by_tracking_id(self, tracking_id: str) -> Optional[Application]:
+        return self.db.query(Application).filter(
+            Application.tracking_id == tracking_id
         ).first()
 
     def get_by_citizen(self, citizen_ref: str, limit: int = 20) -> List[Application]:
@@ -74,6 +115,40 @@ class ApplicationRepository:
             .limit(limit)
             .all()
         )
+
+    def get_active_for_citizen(self, citizen_ref: str) -> Optional[Application]:
+        """Get most recent non-terminal application for citizen."""
+        terminal = {"COMPLETED", "REJECTED"}
+        apps = self.get_by_citizen(citizen_ref)
+        active = [a for a in apps if a.status not in terminal]
+        return active[0] if active else None
+
+    def update_last_channel(self, application_id: str, channel: str) -> None:
+        app = self.get_by_id(application_id)
+        if app:
+            app.last_channel = channel
+            app.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+
+    def update_progress(self, application_id: str, progress_percent: int,
+                        current_step: str = None) -> None:
+        app = self.get_by_id(application_id)
+        if app:
+            app.progress_percent = min(100, max(0, progress_percent))
+            if current_step:
+                app.current_step = current_step
+            app.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+
+    def update_validation_summary(self, application_id: str, summary: dict,
+                                  overall_match_score: float = None) -> None:
+        app = self.get_by_id(application_id)
+        if app:
+            app.validation_summary = summary
+            if overall_match_score is not None:
+                app.overall_match_score = overall_match_score
+            app.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
 
     def update_status(self, application_id: str, status: str) -> Optional[Application]:
         app = self.get_by_id(application_id)
@@ -107,8 +182,11 @@ class ApplicationRepository:
         field_name: str,
         field_value: Any,
         classification: Optional[str] = None,
+        source: str = "WEB",
+        confirmed: bool = False,
+        override_reason: str = None,
     ) -> ApplicationData:
-        """Save an application form field with encryption for restricted data."""
+        """Save an application form field with encryption and field provenance."""
         if classification is None:
             classification = DataClassifier.classify_field(field_name)
 
@@ -118,23 +196,63 @@ class ApplicationRepository:
         else:
             encrypted_value = str(field_value)  # NON_SENSITIVE stored plaintext
 
-        # Upsert: delete existing if present
-        self.db.query(ApplicationData).filter(
+        # Upsert with version increment
+        existing = self.db.query(ApplicationData).filter(
             and_(
                 ApplicationData.application_id == application_id,
                 ApplicationData.field_name == field_name,
             )
-        ).delete()
+        ).first()
+
+        if existing:
+            existing.field_value_encrypted = encrypted_value
+            existing.classification = classification
+            existing.source = source
+            existing.confirmed = confirmed
+            existing.override_reason = override_reason
+            existing.version = (existing.version or 1) + 1
+            existing.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+            return existing
 
         data = ApplicationData(
             application_id=application_id,
             field_name=field_name,
             field_value_encrypted=encrypted_value,
             classification=classification,
+            source=source,
+            confirmed=confirmed,
+            override_reason=override_reason,
+            version=1,
         )
         self.db.add(data)
         self.db.commit()
         return data
+
+    def get_fields_with_provenance(self, application_id: str) -> List[Dict]:
+        """Get all fields including their source/provenance metadata."""
+        fields = self.db.query(ApplicationData).filter(
+            ApplicationData.application_id == application_id
+        ).all()
+        result = []
+        for f in fields:
+            try:
+                if f.classification in ("RESTRICTED", "QUASI_IDENTIFIER"):
+                    value = FieldEncryptor.decrypt(f.field_value_encrypted)
+                else:
+                    value = f.field_value_encrypted
+            except Exception:
+                value = "[ENCRYPTED]"
+            result.append({
+                "field_name": f.field_name,
+                "value": value,
+                "source": f.source,
+                "confirmed": f.confirmed,
+                "version": f.version,
+                "classification": f.classification,
+                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+            })
+        return result
 
     def get_fields(self, application_id: str, decrypt: bool = True) -> Dict[str, Any]:
         """Get all form fields for an application, decrypting where necessary."""

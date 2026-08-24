@@ -10,6 +10,8 @@ from typing import Dict, Optional, List, Tuple, Any
 from sqlalchemy.orm import Session
 
 from app.orchestration.nlu.local_llm import LocalNLU, LiteracyAdaptiveDialogue
+from app.orchestration.nlu.intent_classifier import IntentClassifier, QAHandler  # Phase 5
+from app.orchestration.nlu.field_corrector import FieldCorrector                  # Phase 5
 from app.rules_engine.engine import ServiceSpecLoader, FieldValidator, EligibilityChecker, FeeCalculator
 from app.rules_engine.fraud_scorer import FraudScorer
 from app.data_layer.repositories.session_repo import SessionRepository
@@ -29,7 +31,7 @@ STATE_GRAPH = {
     "CONSENT": ["INTENT_DETECTION"],
     "INTENT_DETECTION": ["SLOT_FILLING", "STATUS_QUERY", "ESCALATION"],
     "SLOT_FILLING": ["SLOT_FILLING", "DOCUMENT_CAPTURE", "VALIDATION"],
-    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING"],
+    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING", "VALIDATION", "PAYMENT", "CORRECTION_PROMPT"],
     "DOCUMENT_VERIFY": ["VALIDATION", "CORRECTION_PROMPT"],
     "VALIDATION": ["PAYMENT", "CORRECTION_PROMPT", "ESCALATION"],
     "CORRECTION_PROMPT": ["SLOT_FILLING", "DOCUMENT_CAPTURE"],
@@ -40,6 +42,7 @@ STATE_GRAPH = {
     "ESCALATION": ["END"],
     "END": [],
 }
+
 
 
 def _valid_transition(from_state: str, to_state: str) -> bool:
@@ -56,6 +59,9 @@ class ConversationOrchestrator:
     def __init__(self, db: Session):
         self.db = db
         self.nlu = LocalNLU()
+        self.intent_clf = IntentClassifier()   # Phase 5: richer intent + slot classifier
+        self.qa_handler = QAHandler()          # Phase 5: FAQ answers
+        self.field_corrector = FieldCorrector()# Phase 5: field value auto-correction
         self.session_repo = SessionRepository(db)
         self.app_repo = ApplicationRepository(db)
         self.citizen_repo = CitizenRepository(db)
@@ -94,12 +100,30 @@ class ConversationOrchestrator:
         if language and language != session.language:
             session.language = language
 
-        # 2. Run NLU
+        # 2. Run NLU (LocalNLU for Ollama/keyword)
         nlu_result = self.nlu.analyze(text, language=session.language, context={
             "current_node": session.current_node,
             "filled_slots": session.filled_slots,
             "service_id": getattr(session, "application_id", None),
         })
+
+        # Phase 5: Enrich with IntentClassifier (richer keyword scoring)
+        clf_result = self.intent_clf.classify(
+            text, language=session.language,
+            conversation_state=session.current_node,
+        )
+        # Merge: prefer IntentClassifier if confidence > 0.5, else use LocalNLU
+        if clf_result.get("confidence", 0) > 0.5:
+            nlu_result["intent"] = clf_result["intent"]
+            nlu_result["service_type"] = clf_result.get("service_type") or nlu_result.get("service_type")
+            # Merge entities
+            nlu_result.setdefault("entities", {}).update(clf_result.get("entities", {}))
+
+        # Phase 5: Check FAQ if ASK_HELP intent
+        if nlu_result.get("intent") == "ASK_HELP":
+            faq_answer = self.qa_handler.answer(text, session.language)
+            if faq_answer:
+                nlu_result["faq_answer"] = faq_answer
 
         # 3. Update literacy level from NLU
         detected_literacy = nlu_result.get("literacy_level", "MEDIUM")
@@ -377,6 +401,14 @@ class ConversationOrchestrator:
             slot = slot_map[next_missing]
             candidate_value = entities.get(next_missing) or raw_text.strip()
 
+            # ── Phase 5: Auto-correct field value before validation ──
+            corrected_value, was_corrected, correction_note = self.field_corrector.correct(
+                next_missing, candidate_value, session.language
+            )
+            if was_corrected:
+                logger.info(f"FieldCorrector [{next_missing}]: {candidate_value!r} → {corrected_value!r} ({correction_note})")
+                candidate_value = corrected_value
+
             valid, error = FieldValidator.validate_slot(slot, candidate_value, session.language)
             if valid:
                 session.filled_slots = {**session.filled_slots, next_missing: candidate_value}
@@ -384,7 +416,7 @@ class ConversationOrchestrator:
                 missing.remove(next_missing)
                 filled_something = True
 
-                # Save to DB
+                # Save to DB (with corrected value + source channel)
                 self.app_repo.save_field(
                     session.application_id, next_missing, candidate_value, slot.classification
                 )
@@ -395,6 +427,7 @@ class ConversationOrchestrator:
                 })
                 session.validation_errors = session.validation_errors + [error]
                 return error_msg, "SLOT_FILLING", {}
+
 
         # Also fill from NLU entities for other slots
         for slot_name, value in entities.items():
@@ -433,26 +466,75 @@ class ConversationOrchestrator:
         return next_slot_prompt, "SLOT_FILLING", {}
 
     def _handle_document_capture(self, session, nlu_result):
-        """DOCUMENT_CAPTURE: Guide document upload."""
-        raw_text_lower = nlu_result.get("entities", {})
+        """DOCUMENT_CAPTURE: Guide document upload, then route to Admin pre-approval."""
+        app = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+        if not app:
+            return "Application not found.", "ESCALATION", {}
 
-        # Demo mode: skip documents
+        spec = ServiceSpecLoader.get(app.service_id)
+        required_doc_types = [d["type"] for d in (spec.required_docs if spec else [])]
+
+        # Check uploaded document types
+        uploaded_doc_types = [d.doc_type for d in (app.documents or []) if d.verification_status != "REJECTED"]
+        missing_doc_types = [dt for dt in required_doc_types if dt not in uploaded_doc_types]
+
+        raw_text = (nlu_result.get("raw_text") or "").lower().strip()
+
+        # Auto-advance if all docs uploaded or user explicitly asks to proceed
+        advance_keywords = ["done", "skip", "next", "proceed", "continue", "what next", "finish", "review", "upload done", "now what"]
+        should_advance = (not missing_doc_types) or any(w in raw_text for w in advance_keywords)
+
+        if should_advance:
+            # Transition app FSM to PENDING_OFFICER_PRE_APPROVAL
+            try:
+                from app.orchestration.state_machine.application_fsm import AppState
+                self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
+            except Exception as e:
+                logger.warning(f"Could not update app status to PENDING_OFFICER_PRE_APPROVAL: {e}")
+
+            msg = self._multilang_msg(session.language, {
+                "en": (
+                    "✅ All documents uploaded and scanned!\n\n"
+                    "📋 Your application has been sent to the Admin for document pre-verification.\n"
+                    "You will receive a notification here once the Admin reviews and approves your documents.\n\n"
+                    "⏳ Please wait — no payment is required until Admin approval."
+                ),
+                "hi": (
+                    "✅ सभी दस्तावेज़ अपलोड और स्कैन हो गए!\n\n"
+                    "📋 आपका आवेदन Admin को पूर्व-सत्यापन के लिए भेज दिया गया है।\n"
+                    "Admin के अनुमोदन के बाद आपको यहाँ सूचना मिलेगी।\n\n"
+                    "⏳ कृपया प्रतीक्षा करें — Admin की स्वीकृति तक कोई भुगतान आवश्यक नहीं है।"
+                ),
+                "mr": (
+                    "✅ सर्व कागदपत्रे अपलोड आणि स्कॅन झाली!\n\n"
+                    "📋 तुमचा अर्ज Admin कडे पूर्व-पडताळणीसाठी पाठवला आहे.\n"
+                    "Admin मंजुरीनंतर तुम्हाला येथे सूचना मिळेल.\n\n"
+                    "⏳ कृपया प्रतीक्षा करा — Admin मंजुरीपर्यंत कोणतेही शुल्क लागत नाही."
+                ),
+            })
+            return msg, "DOCUMENT_CAPTURE", {}
+
+        # Still missing documents — prompt user specifically
+        missing_str = ", ".join([dt.replace("_", " ").title() for dt in missing_doc_types])
         msg = self._multilang_msg(session.language, {
             "en": (
-                "📤 Document Upload\n"
-                "In demo mode, documents are simulated. Type 'upload done' to proceed with mock documents,\n"
-                "or describe a real document you're uploading."
+                f"📄 Document Upload Progress ({len(uploaded_doc_types)}/{len(required_doc_types)} uploaded)\n"
+                f"Still required: *{missing_str}*\n\n"
+                "Please upload the required document using the 📎 attachment button."
             ),
             "hi": (
-                "📤 दस्तावेज़ अपलोड\n"
-                "डेमो मोड में दस्तावेज़ सिम्युलेट किए जाते हैं। 'अपलोड पूर्ण' टाइप करें।"
+                f"📄 दस्तावेज़ अपलोड प्रगति ({len(uploaded_doc_types)}/{len(required_doc_types)})\n"
+                f"आवश्यक: *{missing_str}*\n\n"
+                "कृपया संलग्नक बटन से दस्तावेज़ अपलोड करें।"
             ),
         })
         return msg, "DOCUMENT_CAPTURE", {}
 
+
     def _handle_document_verify(self, session, nlu_result):
         """DOCUMENT_VERIFY: OCR extraction and cross-reference."""
         return self._handle_validation(session)
+
 
     def _handle_validation(self, session):
         """VALIDATION: Run business rules + eligibility + fraud scoring."""

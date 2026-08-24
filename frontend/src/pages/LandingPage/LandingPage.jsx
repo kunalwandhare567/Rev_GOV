@@ -199,6 +199,36 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* ── MULTI-CHANNEL SECTION ── */}
+      <section className={styles.channelSection}>
+        <div className={styles.sectionInner}>
+          <h2 className={styles.sectionTitle}>
+            {language === 'hi' ? 'जैसे चाहे वैसे आवेदन करें' :
+             language === 'mr' ? 'तुमच्या पद्धतीने अर्ज करा' :
+             'Apply Your Way — Any Channel, One Application'}
+          </h2>
+          <p className={styles.sectionSubtitle}>
+            {language === 'hi' ? 'सभी चैनल एक ही DB साझा करते हैं — कभी भी स्विच करें।' :
+             language === 'mr' ? 'सर्व चॅनेल एकच DB वापरतात — कधीही स्विच करा।' :
+             'Start on WhatsApp, continue on Web, finish via Phone — all synced in real time.'}
+          </p>
+          <div className={styles.channelCards}>
+            {[
+              { href: '/whatsapp', icon: '💬', title: 'WhatsApp Chat', desc: language === 'hi' ? 'WhatsApp जैसी चैट से आवेदन करें' : 'Apply via WhatsApp-style chat with voice & documents', color: '#25d366', bg: 'rgba(37,211,102,0.08)' },
+              { href: '/chat', icon: '🌐', title: 'Web Portal', desc: language === 'hi' ? 'वेब पोर्टल से आवेदन करें' : 'Full-featured citizen web portal with live form', color: '#6366f1', bg: 'rgba(99,102,241,0.08)' },
+              { href: '/ivr', icon: '📞', title: 'Phone IVR', desc: language === 'hi' ? 'फोन से सेवाएं पाएं' : 'Dial our IVR helpline — voice + keypad navigation', color: '#f59e0b', bg: 'rgba(245,158,11,0.08)' },
+              { href: '/status', icon: '🔍', title: 'Track Status', desc: language === 'hi' ? 'आवेदन की स्थिति जानें' : 'Track your application with a public tracking ID', color: '#22d3ee', bg: 'rgba(34,211,238,0.08)' },
+            ].map(ch => (
+              <a key={ch.href} href={ch.href} className={styles.channelCard} style={{ '--ch-color': ch.color, '--ch-bg': ch.bg }}>
+                <div className={styles.channelCardIcon}>{ch.icon}</div>
+                <div className={styles.channelCardTitle}>{ch.title}</div>
+                <div className={styles.channelCardDesc}>{ch.desc}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <footer className={styles.footer}>
         <div className={styles.sectionInner}>
           <div className={styles.footerRow}>
@@ -209,6 +239,8 @@ export default function LandingPage() {
             <div className={styles.footerLinks}>
               <Link to="/services">Services</Link>
               <Link to="/status">Track Application</Link>
+              <a href="/whatsapp">💬 WhatsApp</a>
+              <a href="/ivr">📞 IVR</a>
               <Link to="/admin/login">Admin</Link>
               <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer">API Docs</a>
             </div>

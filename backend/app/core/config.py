@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "phi3:mini"
     LLM_FALLBACK_ENABLED: bool = True
+    GEMINI_API_KEY: Optional[str] = None  # Set in .env for Gemini Vision OCR
 
     # ASR/TTS
     ASR_PROVIDER: str = "mock"

@@ -1,0 +1,368 @@
+/* IVR Phone Simulator — looks like a real smartphone */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* { box-sizing: border-box; }
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+  font-family: 'Inter', sans-serif;
+  overflow: hidden;
+}
+
+/* ── INFO PANEL (LEFT) ── */
+.infoPanel {
+  flex: 1;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 480px;
+  overflow-y: auto;
+}
+
+.infoPanelHeader { text-align: center; }
+.infoPanelIcon { font-size: 48px; margin-bottom: 8px; }
+.infoPanelTitle { font-size: 24px; font-weight: 700; color: #fff; margin: 0 0 4px; }
+.infoPanelSub { font-size: 14px; color: rgba(255,255,255,0.5); margin: 0; line-height: 1.5; }
+
+/* Language */
+.langSection { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; }
+.langLabel { font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.langBtns { display: flex; gap: 8px; }
+.langBtn {
+  flex: 1;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  color: rgba(255,255,255,0.7);
+  padding: 8px 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+.langBtn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.langBtnActive { background: rgba(99,102,241,0.3) !important; border-color: #6366f1 !important; color: #a5b4fc !important; }
+.langBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Menu Guide */
+.menuGuide { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; }
+.menuGuideTitle { font-size: 12px; color: rgba(255,255,255,0.5); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.menuHint { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.menuHint:last-child { border-bottom: none; padding-bottom: 0; }
+.menuKey {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: rgba(99,102,241,0.3);
+  border: 1px solid rgba(99,102,241,0.5);
+  color: #a5b4fc;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.menuHintText { font-size: 14px; color: rgba(255,255,255,0.8); }
+
+/* App Info */
+.appInfoBox { background: rgba(34,211,238,0.08); border: 1px solid rgba(34,211,238,0.2); border-radius: 12px; padding: 16px; }
+.appInfoTitle { font-size: 12px; color: #22d3ee; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+.appInfoRow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; color: rgba(255,255,255,0.7); }
+.appInfoRow span:last-child { font-weight: 600; color: #fff; }
+
+/* Transcript */
+.transcriptPanel {
+  background: rgba(0,0,0,0.3);
+  border-radius: 12px;
+  padding: 16px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.transcriptTitle { font-size: 12px; color: rgba(255,255,255,0.4); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.transcriptList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; max-height: 240px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+.transcriptRow { display: flex; flex-direction: column; gap: 2px; }
+.transcriptRole { font-size: 10px; color: rgba(255,255,255,0.4); font-weight: 600; }
+.transcriptText { font-size: 13px; color: rgba(255,255,255,0.85); line-height: 1.5; }
+.transcriptRow.ivr .transcriptText { color: #67e8f9; }
+.transcriptRow.user .transcriptText { color: #86efac; }
+.transcriptRow.system .transcriptText { color: rgba(255,255,255,0.4); font-style: italic; text-align: center; }
+
+/* ── PHONE UI (RIGHT) ── */
+.phoneContainer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  flex: 1;
+}
+
+.phone {
+  width: 340px;
+  background: linear-gradient(180deg, #1c1c1e, #0a0a0a);
+  border-radius: 48px;
+  padding: 16px 12px 24px;
+  box-shadow:
+    0 0 0 2px rgba(255,255,255,0.08),
+    0 0 0 8px rgba(0,0,0,0.4),
+    0 40px 80px rgba(0,0,0,0.8),
+    inset 0 1px 0 rgba(255,255,255,0.1);
+  position: relative;
+}
+
+/* Phone notch */
+.phone::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 28px;
+  background: #000;
+  border-radius: 0 0 20px 20px;
+  z-index: 10;
+}
+
+/* Phone side buttons */
+.phone::after {
+  content: '';
+  position: absolute;
+  top: 80px;
+  right: -4px;
+  width: 4px;
+  height: 60px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 80px 0 rgba(255,255,255,0.15);
+}
+
+/* Screen */
+.screen {
+  background: linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  border-radius: 36px;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px 20px;
+  margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.screen::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+}
+
+.screenTime { font-size: 48px; font-weight: 200; color: #fff; font-variant-numeric: tabular-nums; }
+.screenDate { font-size: 14px; color: rgba(255,255,255,0.6); margin-top: 4px; }
+.screenCallerName { font-size: 20px; font-weight: 600; color: #fff; margin-top: 24px; }
+.screenNumber { font-size: 14px; color: rgba(255,255,255,0.5); margin-top: 4px; }
+
+.phoneInputSection {
+  margin-top: 20px;
+  width: 100%;
+}
+.numberLabel { font-size: 11px; color: rgba(255,255,255,0.4); text-align: center; margin-bottom: 6px; }
+.numberInput {
+  width: 100%;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 15px;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.numberInput:focus { border-color: #6366f1; }
+.numberInput::placeholder { color: rgba(255,255,255,0.3); }
+
+/* Calling Animation */
+.callingAnimation {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.callingRing {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(99,102,241,0.5);
+  animation: ringExpand 1.5s ease-out infinite;
+}
+
+@keyframes ringExpand {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.callingAvatar {
+  font-size: 36px;
+  position: relative;
+  z-index: 1;
+  background: rgba(99,102,241,0.3);
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.callingText { font-size: 16px; color: rgba(255,255,255,0.7); }
+.callingNum { font-size: 13px; color: rgba(255,255,255,0.4); margin-top: 4px; }
+
+/* Active call */
+.activeAvatar {
+  font-size: 48px;
+  background: linear-gradient(135deg, rgba(34,197,94,0.3), rgba(16,185,129,0.3));
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.activeName { font-size: 18px; font-weight: 600; color: #fff; }
+.activeStatus { font-size: 13px; color: rgba(255,255,255,0.6); margin-top: 4px; }
+.callTimer { font-size: 28px; font-weight: 200; color: #4ade80; font-variant-numeric: tabular-nums; margin-top: 8px; }
+
+/* Waveform */
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 36px;
+  margin-top: 12px;
+}
+
+.wavebar {
+  width: 4px;
+  background: linear-gradient(180deg, #4ade80, #22c55e);
+  border-radius: 2px;
+  animation: waveAnim 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes waveAnim {
+  from { transform: scaleY(0.3); }
+  to { transform: scaleY(1); }
+}
+
+/* Ended */
+.endedIcon { font-size: 48px; margin-bottom: 12px; }
+.endedText { font-size: 18px; color: rgba(255,255,255,0.7); }
+.endedDuration { font-size: 24px; color: rgba(255,255,255,0.4); font-variant-numeric: tabular-nums; margin-top: 4px; }
+
+/* ── DIALPAD ── */
+.dialpad {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px;
+  margin-bottom: 16px;
+}
+
+.dialRow { display: flex; gap: 8px; justify-content: space-between; }
+
+.dialKey {
+  flex: 1;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  color: #fff;
+  cursor: pointer;
+  padding: 14px 8px;
+  transition: all 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.dialKey:hover { background: rgba(255,255,255,0.15); transform: scale(0.97); }
+.dialKey:active { background: rgba(255,255,255,0.25); transform: scale(0.94); }
+.dialKey:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+
+.dialKeyNum { font-size: 22px; font-weight: 400; line-height: 1; }
+
+/* Action Buttons */
+.actionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0 16px;
+}
+
+.callBtn {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(34,197,94,0.4);
+  transition: all 0.2s;
+}
+.callBtn:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(34,197,94,0.5); }
+.callBtn:active { transform: scale(0.95); }
+
+.hangupBtn {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(239,68,68,0.4);
+  transition: all 0.2s;
+}
+.hangupBtn:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(239,68,68,0.5); }
+.hangupBtn:active { transform: scale(0.95); }
+
+.actionBtn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  border: none;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.actionBtn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.actionActive { background: rgba(99,102,241,0.3) !important; color: #a5b4fc !important; border: 1px solid rgba(99,102,241,0.5) !important; }
+
+@media (max-width: 900px) {
+  .shell { flex-direction: column; }
+  .infoPanel { max-width: 100%; padding: 20px; }
+  .phoneContainer { padding: 20px; }
+}

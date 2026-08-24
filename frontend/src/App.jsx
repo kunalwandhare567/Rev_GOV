@@ -3,10 +3,15 @@ import CitizenLayout   from './layouts/CitizenLayout'
 import RootLayout      from './layouts/RootLayout'
 import AuthGuard       from './layouts/AuthGuard'
 
-import LandingPage     from './pages/LandingPage/LandingPage'
-import CitizenChat     from './pages/CitizenChat/CitizenChat'
-import StatusTracker   from './pages/StatusTracker/StatusTracker'
-import ServiceCatalogue from './pages/ServiceCatalogue/ServiceCatalogue'
+import LandingPage        from './pages/LandingPage/LandingPage'
+import CitizenChat        from './pages/CitizenChat/CitizenChat'
+import StatusTracker      from './pages/StatusTracker/StatusTracker'
+import ServiceCatalogue   from './pages/ServiceCatalogue/ServiceCatalogue'
+
+// ── NEW OMNICHANNEL PAGES ──
+import WhatsAppChat       from './pages/WhatsAppChat/WhatsAppChat'
+import IVRSimulator       from './pages/IVRSimulator/IVRSimulator'
+import ApplicationReview  from './pages/ApplicationReview/ApplicationReview'
 
 import AdminLogin      from './pages/AdminLogin/AdminLogin'
 import OfficerLogin    from './pages/OfficerLogin/OfficerLogin'
@@ -20,6 +25,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* ── CITIZEN PORTAL (with layout) ── */}
         <Route element={<CitizenLayout />}>
           <Route path="/"         element={<LandingPage />} />
           <Route path="/chat"     element={<CitizenChat />} />
@@ -27,6 +33,17 @@ export default function App() {
           <Route path="/services" element={<ServiceCatalogue />} />
         </Route>
 
+        {/* ── STANDALONE CHANNEL UIs (no layout wrapper) ── */}
+        <Route path="/whatsapp"  element={<WhatsAppChat />} />
+        <Route path="/ivr"       element={<IVRSimulator />} />
+
+        {/* ── APPLICATION REVIEW (with citizen layout) ── */}
+        <Route element={<CitizenLayout />}>
+          <Route path="/applications/:id/review" element={<ApplicationReview />} />
+          <Route path="/tracking/:id"            element={<ApplicationReview />} />
+        </Route>
+
+        {/* ── ADMIN / OFFICER PORTALS ── */}
         <Route path="/admin/login"   element={<AdminLogin />} />
         <Route path="/officer/login" element={<OfficerLogin />} />
 
