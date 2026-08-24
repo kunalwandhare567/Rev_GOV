@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.data_layer.repositories.application_repo import ApplicationRepository
 from app.data_layer.repositories.document_repo import DocumentRepository
 from app.data_layer.repositories.event_repo import EventRepository
+from app.data_layer.repositories.session_repo import SessionRepository
 from app.services.ocr_service import OCRService
 from app.channels.base import EventType
 
@@ -32,6 +33,7 @@ class PaymentService:
         self.app_repo = ApplicationRepository(db)
         self.doc_repo = DocumentRepository(db)
         self.event_repo = EventRepository(db)
+        self.session_repo = SessionRepository(db)
         self.ocr = OCRService()
 
     # ── INITIATE ──────────────────────────────────────────────────────────
@@ -90,11 +92,19 @@ class PaymentService:
             event_data={"txn_id": txn_id, "amount": amount, "mode": "MOCK"},
         )
 
+        # Phase 9: Trigger certificate generation immediately after payment
+        cert_result = self._trigger_certificate_generation(application_id, citizen_ref)
+
         return {
             "status": "SUCCESS",
             "txn_id": txn_id,
             "amount": amount,
-            "message": f"✅ Payment successful! ₹{amount:.0f} · TXN: {txn_id}",
+            "certificate_ready": cert_result.get("success", False),
+            "certificate_number": cert_result.get("certificate_number"),
+            "message": (
+                f"\u2705 Payment successful! \u20b9{amount:.0f} \u00b7 TXN: {txn_id}" +
+                (f"\n\U0001f4dc Certificate ready! Number: {cert_result['certificate_number']}" if cert_result.get("success") else "")
+            ),
         }
 
     # ── RECEIPT VERIFICATION ──────────────────────────────────────────────
@@ -149,16 +159,22 @@ class PaymentService:
             event_data={"txn_id": extracted_txn, "amount": amount, "mode": "RECEIPT_OCR"},
         )
 
+        # Phase 9: Trigger certificate generation
+        cert_result = self._trigger_certificate_generation(application_id, citizen_ref)
+
         app = self.app_repo.get_by_id(application_id)
         return {
             "status": "SUCCESS",
             "txn_id": extracted_txn,
             "amount": amount,
             "tracking_id": app.tracking_id if app else None,
+            "certificate_ready": cert_result.get("success", False),
+            "certificate_number": cert_result.get("certificate_number"),
             "message": (
-                f"✅ Payment receipt verified!\n"
-                f"💳 TXN: {extracted_txn} | ₹{amount:.0f}\n"
-                f"Your application has been submitted. Track with: {app.tracking_id if app else 'N/A'}"
+                f"\u2705 Payment receipt verified!\n"
+                f"\U0001f4b3 TXN: {extracted_txn} | \u20b9{amount:.0f}\n"
+                + (f"\U0001f4dc Certificate ready! Number: {cert_result['certificate_number']}\n" if cert_result.get("success") else "")
+                + f"Track with: {app.tracking_id if app else 'N/A'}"
             ),
         }
 
@@ -181,3 +197,74 @@ class PaymentService:
                 for p in (app.payments or [])
             ],
         }
+
+    # ── Phase 9: Certificate Generation Trigger ───────────────────────────
+
+    def _trigger_certificate_generation(
+        self,
+        application_id: str,
+        citizen_ref: str,
+    ) -> Dict:
+        """
+        Phase 9 — Trigger certificate generation after payment.
+
+        Flow:
+          PAYMENT_COMPLETED -> CERTIFICATE_GENERATION -> CERTIFICATE_READY -> COMPLETED
+
+        The CertificateService handles:
+          1. PDF generation with QR code + seal
+          2. Saving to database + file system
+          3. Notifying citizen via chat message
+        """
+        try:
+            from app.orchestration.state_machine.application_fsm import AppState
+            from app.services.certificate_service import CertificateService
+
+            # Transition: PAYMENT_COMPLETED -> CERTIFICATE_GENERATION
+            self.app_repo.update_status(application_id, AppState.CERTIFICATE_GENERATION)
+
+            cert_service = CertificateService(self.db)
+            result = cert_service.generate_and_store(
+                application_id=application_id,
+                citizen_ref=citizen_ref,
+            )
+
+            if result.get("success"):
+                # Transition: CERTIFICATE_GENERATION -> CERTIFICATE_READY -> COMPLETED
+                self.app_repo.update_status(application_id, AppState.CERTIFICATE_READY)
+                self.app_repo.update_status(application_id, AppState.COMPLETED)
+                self.app_repo.update_progress(application_id, 100, "COMPLETED")
+
+                # Notify citizen via chat
+                cert_num = result.get("certificate_number", "")
+                app = self.app_repo.get_by_id(application_id)
+                service_name = getattr(app, "service_id", "").replace("_", " ").title() if app else "Certificate"
+
+                notification = (
+                    f"\U0001f389 Your {service_name} has been issued!\n\n"
+                    f"\U0001f4dc Certificate Number: **{cert_num}**\n"
+                    f"\U0001f4c5 Valid for 6 months from today.\n\n"
+                    f"Download your certificate from the portal or visit your nearest Seva Kendra."
+                )
+
+                try:
+                    session = self.session_repo.load_session(citizen_ref)
+                    if session:
+                        self.session_repo.add_message(
+                            session_id=session.id,
+                            role="ASSISTANT",
+                            content=notification,
+                            language=getattr(session, "language", "en"),
+                            modality="TEXT",
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not notify citizen {citizen_ref}: {e}")
+
+            return result
+
+        except ImportError as e:
+            logger.warning(f"CertificateService not available: {e}")
+            return {"success": False, "error": "CertificateService not implemented"}
+        except Exception as e:
+            logger.error(f"Certificate generation failed for {application_id}: {e}")
+            return {"success": False, "error": str(e)}

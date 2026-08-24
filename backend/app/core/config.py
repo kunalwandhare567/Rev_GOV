@@ -1,20 +1,24 @@
 """
 Application Configuration
 All settings loaded from environment variables / .env file.
-No hardcoded values.
+No hardcoded values. No Ollama. No local LLM. No fallback LLM.
+
+LLM_PROVIDER must be one of: gemini | groq | openrouter
+If the required API key is missing, the server will REFUSE TO START with a clear error.
+There is no automatic fallback between providers.
 """
 import json
 from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 
 class Settings(BaseSettings):
     """Central configuration — all values from environment variables."""
 
     # Application
-    APP_NAME: str = "Multilingual Voice-First Revenue Services Platform"
-    APP_VERSION: str = "1.0.0"
+    APP_NAME: str = "Multilingual AI-Powered Citizen Revenue Services Platform"
+    APP_VERSION: str = "3.0.0"
     DEBUG: bool = False
     SECRET_KEY: str
 
@@ -23,14 +27,34 @@ class Settings(BaseSettings):
 
     # API
     API_V1_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:8000",
+    ]
 
-    # LLM
-    LLM_PROVIDER: str = "local"          # local | cloud
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "phi3:mini"
-    LLM_FALLBACK_ENABLED: bool = True
-    GEMINI_API_KEY: Optional[str] = None  # Set in .env for Gemini Vision OCR
+    # ─────────────────────────────────────────────
+    # LLM Provider — ONE of: gemini | groq | openrouter
+    # No Ollama. No phi3:mini. No local LLM.
+    # No automatic fallback between providers.
+    # ─────────────────────────────────────────────
+    LLM_PROVIDER: str = "gemini"
+
+    # Gemini (recommended for POC — free tier available)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+
+    # Groq (extremely fast, Llama 3, free tier available)
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama3-8b-8192"
+
+    # OpenRouter (200+ models via single API key)
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.1-8b-instruct:free"
 
     # ASR/TTS
     ASR_PROVIDER: str = "mock"
@@ -59,11 +83,12 @@ class Settings(BaseSettings):
     FRAUD_SCORE_THRESHOLD_REVIEW: float = 0.4
     FRAUD_SCORE_THRESHOLD_REJECT: float = 0.7
 
-    # Seed credentials
+    # Seed credentials — ADMIN ONLY (Officer persona removed)
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "Admin@123"
-    OFFICER_USERNAME: str = "officer"
-    OFFICER_PASSWORD: str = "Officer@123"
+
+    # OCR
+    TESSERACT_PATH: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
     # Service specs directory
     SERVICE_SPECS_DIR: str = "./seed/service_specs"
@@ -80,6 +105,44 @@ class Settings(BaseSettings):
             except Exception:
                 return [origin.strip() for origin in v.split(",")]
         return v
+
+    @model_validator(mode="after")
+    def validate_llm_provider(self):
+        """
+        Fail-fast validation: if LLM_PROVIDER is set but the required key is missing,
+        raise a clear error immediately at startup.
+        NO silent fallback. NO provider switching.
+        """
+        p = self.LLM_PROVIDER.lower()
+        supported = ("gemini", "groq", "openrouter")
+
+        if p not in supported:
+            raise ValueError(
+                f"LLM_PROVIDER='{self.LLM_PROVIDER}' is not supported.\n"
+                f"Supported providers: {', '.join(supported)}\n"
+                f"Set LLM_PROVIDER in your .env file."
+            )
+
+        if p == "gemini":
+            if not self.GEMINI_API_KEY or "replace_with_real_key" in self.GEMINI_API_KEY:
+                raise ValueError(
+                    "LLM_PROVIDER=gemini but GEMINI_API_KEY is not set or contains placeholder.\n"
+                    "Get a free API key at: https://aistudio.google.com"
+                )
+
+        if p == "groq" and not self.GROQ_API_KEY:
+            raise ValueError(
+                "LLM_PROVIDER=groq but GROQ_API_KEY is not set.\n"
+                "Get a free API key at: https://console.groq.com"
+            )
+
+        if p == "openrouter" and not self.OPENROUTER_API_KEY:
+            raise ValueError(
+                "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.\n"
+                "Get a free API key at: https://openrouter.ai"
+            )
+
+        return self
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

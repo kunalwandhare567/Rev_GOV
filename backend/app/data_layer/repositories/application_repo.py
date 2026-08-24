@@ -117,11 +117,40 @@ class ApplicationRepository:
         )
 
     def get_active_for_citizen(self, citizen_ref: str) -> Optional[Application]:
-        """Get most recent non-terminal application for citizen."""
+        """Get most recent non-terminal application for citizen (any service)."""
         terminal = {"COMPLETED", "REJECTED"}
         apps = self.get_by_citizen(citizen_ref)
         active = [a for a in apps if a.status not in terminal]
         return active[0] if active else None
+
+    def get_active_by_citizen_service(
+        self, citizen_ref: str, service_id: str
+    ) -> Optional[Application]:
+        """
+        Phase 12 — Application Deduplication.
+        Return the most recent non-terminal application for a specific citizen+service pair.
+        Used by orchestrator to resume an existing application instead of creating a duplicate.
+        """
+        terminal = {"COMPLETED", "REJECTED"}
+        app = (
+            self.db.query(Application)
+            .filter(
+                and_(
+                    Application.citizen_ref == citizen_ref,
+                    Application.service_id == service_id,
+                    Application.status.notin_(terminal),
+                )
+            )
+            .order_by(Application.created_at.desc())
+            .first()
+        )
+        return app
+
+    def get_by_citizen_ref(
+        self, citizen_ref: str, limit: int = 20
+    ) -> List[Application]:
+        """Alias for get_by_citizen — used by /applications/current endpoint."""
+        return self.get_by_citizen(citizen_ref, limit=limit)
 
     def update_last_channel(self, application_id: str, channel: str) -> None:
         app = self.get_by_id(application_id)
@@ -154,10 +183,14 @@ class ApplicationRepository:
         app = self.get_by_id(application_id)
         if app:
             app.status = status
-            if status == "SUBMITTED":
-                app.submitted_at = datetime.datetime.utcnow()
-            elif status in ("APPROVED", "REJECTED"):
-                app.completed_at = datetime.datetime.utcnow()
+            now = datetime.datetime.utcnow()
+            # Stamp submitted_at when entering any submission-related state
+            if status in ("SUBMITTED", "SUBMITTED_FOR_VERIFICATION", "UNDER_REVIEW"):
+                if not app.submitted_at:
+                    app.submitted_at = now
+            elif status in ("APPROVED", "REJECTED", "COMPLETED"):
+                app.completed_at = now
+            app.updated_at = now
             self.db.commit()
             self.db.refresh(app)
         return app
@@ -189,6 +222,9 @@ class ApplicationRepository:
         """Save an application form field with encryption and field provenance."""
         if classification is None:
             classification = DataClassifier.classify_field(field_name)
+
+        if isinstance(field_value, str):
+            field_value = field_value.encode("utf-8", "replace").decode("utf-8")
 
         # Encrypt RESTRICTED and QUASI_IDENTIFIER fields
         if classification in ("RESTRICTED", "QUASI_IDENTIFIER"):

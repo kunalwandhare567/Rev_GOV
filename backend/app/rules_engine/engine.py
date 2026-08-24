@@ -178,6 +178,13 @@ class FieldValidator:
                 return False, f"'{slot.name}' must be a number"
 
         if slot.type == "string":
+            # Prevent service titles from being stored as applicant names
+            if slot.name in ("applicant_name", "full_name", "name"):
+                v_lower = value_str.lower()
+                invalid_names = ["income certificate", "caste certificate", "domicile certificate", "obc certificate", "certificate", "income", "caste", "domicile"]
+                if v_lower in invalid_names or "certificate" in v_lower:
+                    return False, "Please enter a valid person's full name, not a service name."
+
             if "min_length" in v and len(value_str) < v["min_length"]:
                 return False, f"'{slot.name}' must be at least {v['min_length']} characters"
             if "max_length" in v and len(value_str) > v["max_length"]:

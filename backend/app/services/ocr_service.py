@@ -20,6 +20,14 @@ class OCRResult:
     doc_type_detected: str
     confidence: float
     provider: str
+    confidence_breakdown: dict = None   # {field_name: confidence_0_to_1}
+
+    def __post_init__(self):
+        if self.confidence_breakdown is None:
+            # Default: all fields get the overall confidence score
+            self.confidence_breakdown = {
+                k: self.confidence for k in self.extracted_fields
+            }
 
 
 # Document type detection keywords
@@ -54,51 +62,91 @@ FIELD_TEMPLATES = {
 class OCRService:
     """
     Extracts text and structured fields from document images/PDFs.
-    Priority chain:
-      1. Gemini Vision API (if GEMINI_API_KEY set) — best accuracy for photos & scanned docs
-      2. PyMuPDF fitz / pypdf — for digital PDFs without scanning
-      3. Tesseract OCR — for images if installed
-      4. Mock extract — demo fallback
+    Primary OCR: Tesseract OCR (C:\\Program Files\\Tesseract-OCR\\tesseract.exe) + pytesseract
+    Secondary Vision: Gemini Vision API (if configured)
     """
+
+    def __init__(self):
+        from app.core.config import settings
+        self.tesseract_path = getattr(settings, "TESSERACT_PATH", None) or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        self.is_tesseract_available = False
+        self._init_tesseract()
+
+    def _init_tesseract(self):
+        """Initialize and verify Tesseract OCR at runtime startup."""
+        if os.name == "nt" and os.path.exists(self.tesseract_path):
+            try:
+                import pytesseract
+                pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
+                self.is_tesseract_available = True
+                logger.info(f"[OCR_INIT] ✅ Tesseract OCR loaded and bound to '{self.tesseract_path}'")
+            except Exception as e:
+                logger.warning(f"[OCR_INIT] ⚠️ PyTesseract binding warning: {e}")
+        elif os.name == "nt":
+            logger.warning(f"[OCR_INIT] ⚠️ Tesseract binary not found at '{self.tesseract_path}'")
 
     def run_ocr(self, file_path: str, doc_type: str = None,
                 language: str = "eng+hin+mar") -> OCRResult:
         """
-        Full OCR pipeline:
-        1. Try Gemini Vision OCR (direct field extraction)
-        2. Fallback: Extract raw text via fitz/pypdf/Tesseract
-        3. Extract structured fields from raw text
+        Full OCR processing pipeline:
+        1. Log structured OCR start context
+        2. Extract raw text & structured fields via Tesseract / Vision
+        3. Parse & return OCRResult with per-field confidence breakdown
         """
         from app.core.config import settings
 
-        # 1. Try Gemini Vision OCR (best accuracy)
-        if settings.GEMINI_API_KEY:
+        logger.info(f"[OCR_START] Processing document: file={file_path}, requested_doc_type={doc_type}, language={language}")
+
+        # 1. Try Gemini Vision OCR (if API key available)
+        if settings.GEMINI_API_KEY and "replace_with_real_key" not in settings.GEMINI_API_KEY:
             try:
                 gemini_result = self._extract_with_gemini_vision(file_path, doc_type)
                 if gemini_result and gemini_result.get("extracted_fields"):
                     detected_type = doc_type or gemini_result.get("doc_type_detected", "UNKNOWN")
-                    return OCRResult(
+                    fields = gemini_result["extracted_fields"]
+                    breakdown = {k: 0.92 for k in fields}
+                    res = OCRResult(
                         raw_text=gemini_result.get("raw_text", ""),
-                        extracted_fields=gemini_result["extracted_fields"],
+                        extracted_fields=fields,
                         doc_type_detected=detected_type,
-                        confidence=gemini_result.get("confidence", 0.92),
+                        confidence=0.92,
                         provider="gemini_vision",
+                        confidence_breakdown=breakdown,
                     )
+                    logger.info(f"[OCR_COMPLETED] Provider=gemini_vision, DocType={res.doc_type_detected}, Fields={list(fields.keys())}")
+                    return res
             except Exception as e:
-                logger.warning(f"Gemini Vision OCR failed, falling back: {e}")
+                logger.warning(f"[OCR_GEMINI_FALLBACK] Gemini Vision OCR failed, using Tesseract OCR: {e}")
 
-        # 2. Fallback: text extraction + field parsing
+        # 2. Extract raw text via Tesseract OCR / PyMuPDF
         raw_text = self._extract_text(file_path, language)
         detected_type = doc_type or self.detect_document_type(raw_text)
-        extracted_fields = self._extract_fields(raw_text, detected_type)
 
-        return OCRResult(
-            raw_text=raw_text,
+        if raw_text and raw_text.strip():
+            extracted_fields = self._extract_fields(raw_text, detected_type)
+            provider = "tesseract"
+            base_confidence = 0.85 if self.is_tesseract_available else 0.70
+        else:
+            extracted_fields = {}
+            provider = "mock"
+            base_confidence = 0.0
+            logger.warning(f"[OCR_EMPTY] No text could be extracted from '{file_path}'. Check image clarity or Tesseract installation.")
+
+        breakdown = {k: base_confidence for k in extracted_fields}
+
+        res = OCRResult(
+            raw_text=raw_text or "",
             extracted_fields=extracted_fields,
             doc_type_detected=detected_type,
-            confidence=0.75 if raw_text else 0.0,
-            provider="tesseract" if raw_text else "mock",
+            confidence=base_confidence,
+            provider=provider,
+            confidence_breakdown=breakdown,
         )
+        logger.info(
+            f"[OCR_COMPLETED] Provider={res.provider}, DocType={res.doc_type_detected}, "
+            f"Confidence={res.confidence:.2f}, FieldsCount={len(extracted_fields)}, Fields={list(extracted_fields.keys())}"
+        )
+        return res
 
     def detect_document_type(self, text: str) -> str:
         """Identify document type from OCR text using keyword matching."""
@@ -249,6 +297,15 @@ Rules:
             import pytesseract
             from PIL import Image
 
+            # Auto-detect Tesseract path from env/settings or Windows default
+            env_tesseract_path = getattr(settings, "TESSERACT_PATH", None) or os.getenv("TESSERACT_PATH")
+            tesseract_win_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+            
+            if env_tesseract_path and os.path.exists(env_tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = env_tesseract_path
+            elif os.name == "nt" and os.path.exists(tesseract_win_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_win_path
+
             img = Image.open(file_path)
             text = pytesseract.image_to_string(img, lang=language)
             if text and text.strip():
@@ -285,6 +342,9 @@ Rules:
         try:
             from pdf2image import convert_from_path
             import pytesseract
+            tesseract_win_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+            if os.name == "nt" and os.path.exists(tesseract_win_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_win_path
             pages = convert_from_path(file_path, dpi=300)
             texts = []
             for page in pages:

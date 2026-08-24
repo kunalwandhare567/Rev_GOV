@@ -44,6 +44,9 @@ class AuditRepository:
         last = self.db.query(AuditLog).order_by(AuditLog.id.desc()).first()
         previous_hash = last.payload_hash if last else "GENESIS"
 
+        if isinstance(action, str):
+            action = action.encode("utf-8", "replace").decode("utf-8")
+
         entry = AuditLog(
             event_type=event_type,
             actor=actor,

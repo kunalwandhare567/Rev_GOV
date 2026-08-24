@@ -220,7 +220,7 @@ async def upload_document(
 
     # Run OCR in background (async)
     import asyncio
-    asyncio.create_task(_run_ocr_background(doc.id, application.id, application_id, db))
+    asyncio.create_task(_run_ocr_background(doc.id, application.id, citizen.citizen_ref))
 
     return {
         "document_id": doc.id,
@@ -230,8 +230,15 @@ async def upload_document(
     }
 
 
-async def _run_ocr_background(doc_id: str, application_id: str, _, db: Session):
-    """Run OCR + matching in background."""
+async def _run_ocr_background(doc_id: str, application_id: str, citizen_ref: str = None, _=None):
+    """
+    Run OCR + field matching in background with an independent DB session.
+    Posts a structured mismatch message into the citizen's WhatsApp conversation.
+    Uses GeminiDialogueService for natural language output when available.
+    """
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
     try:
         from app.services.ocr_service import OCRService
         from app.services.matching_service import MatchingService
@@ -245,28 +252,123 @@ async def _run_ocr_background(doc_id: str, application_id: str, _, db: Session):
         if not doc:
             return
 
-        # OCR
+        # Mark processing started
         doc_repo.update_status(doc_id, "OCR_PROCESSING")
+
+        # Run OCR (Gemini Vision → Tesseract → mock)
         ocr_svc = OCRService()
         ocr_result = ocr_svc.run_ocr(doc.file_ref, doc.doc_type)
         doc_repo.update_ocr_result(doc_id, ocr_result.extracted_fields, ocr_result.confidence)
 
-        # Auto-detect doc type
-        if doc.doc_type == "UNKNOWN" and ocr_result.doc_type_detected != "UNKNOWN":
-            doc = doc_repo.update_status(doc_id, "VALIDATING")
+        logger.info(
+            f"WhatsApp OCR complete for doc {doc_id}: "
+            f"provider={ocr_result.provider}, "
+            f"fields={list(ocr_result.extracted_fields.keys())}, "
+            f"confidence={ocr_result.confidence:.2f}"
+        )
 
-        # Match against application fields
+        # Auto-detect and update doc type if it was UNKNOWN
+        if doc.doc_type == "UNKNOWN" and ocr_result.doc_type_detected not in ("UNKNOWN", None):
+            doc_repo.update_doc_type(doc_id, ocr_result.doc_type_detected)
+            doc.doc_type = ocr_result.doc_type_detected
+
+        # Match against application-declared fields
         app_fields = app_repo.get_fields(application_id)
         matcher = MatchingService()
-        match_result = matcher.compare_document(app_fields, ocr_result.extracted_fields)
+        match_result = matcher.compare_document(
+            app_fields, ocr_result.extracted_fields, doc_type=doc.doc_type
+        )
 
+        # Determine status
+        if match_result.mismatched_fields:
+            status = "MISMATCH"
+        elif match_result.overall_score == 0.0 and not match_result.matched_fields:
+            status = "INCOMPLETE"
+        else:
+            status = "VERIFIED"
+
+        # Update document record
+        doc_repo.update_document_verification(doc_id, status, match_result.mismatched_fields)
         doc_repo.update_match_scores(
             doc_id, match_result.field_scores,
             match_result.overall_score, match_result.mismatched_fields
         )
 
+        # Post notification into WhatsApp conversation
+        if citizen_ref:
+            from app.models.db_models import ConversationSession
+            session = (
+                db.query(ConversationSession)
+                .filter(
+                    ConversationSession.citizen_ref == citizen_ref,
+                    ConversationSession.channel == "WHATSAPP",
+                )
+                .order_by(ConversationSession.updated_at.desc())
+                .first()
+            )
+
+            if session:
+                lang = session.language or "en"
+
+                if status == "INCOMPLETE":
+                    notify_msgs = {
+                        "en": (
+                            f"📄 Your document has been received.\n"
+                            f"⚠️ I couldn't extract text from it — please ensure the image is clear.\n"
+                            f"OCR engine used: {ocr_result.provider}"
+                        ),
+                        "hi": (
+                            f"📄 आपका दस्तावेज़ प्राप्त हो गया।\n"
+                            f"⚠️ दस्तावेज़ से टेक्स्ट निकालना संभव नहीं हुआ। कृपया स्पष्ट छवि भेजें।"
+                        ),
+                        "mr": (
+                            f"📄 तुमचे कागदपत्र मिळाले.\n"
+                            f"⚠️ कागदपत्रातून मजकूर काढता आला नाही. स्पष्ट प्रतिमा पाठवा."
+                        ),
+                    }
+                    msg = notify_msgs.get(lang, notify_msgs["en"])
+
+                elif status == "VERIFIED":
+                    msg = matcher._all_match_message(match_result, lang)
+
+                else:
+                    # MISMATCH — use Gemini-powered message generation
+                    msg = matcher.generate_mismatch_message(
+                        match_result, language=lang, use_gemini=True
+                    )
+                    # Append fields-not-found-in-doc notice
+                    if match_result.fields_only_in_app:
+                        fnd = ", ".join(
+                            f.replace("_", " ").title()
+                            for f in match_result.fields_only_in_app
+                        )
+                        suffixes = {
+                            "en": f"\n\n❓ These fields were not found in your document: {fnd}",
+                            "hi": f"\n\n❓ ये फ़ील्ड दस्तावेज़ में नहीं मिले: {fnd}",
+                            "mr": f"\n\n❓ हे तपशील कागदपत्रात आढळले नाहीत: {fnd}",
+                        }
+                        msg += suffixes.get(lang, suffixes["en"])
+
+                    # If auto-detecetd a doc type, prepend that info
+                    if doc.doc_type and doc.doc_type != "UNKNOWN":
+                        type_notice = {
+                            "en": f"📋 I detected this as: **{doc.doc_type.replace('_', ' ').title()}**\n\n",
+                            "hi": f"📋 मैंने इसे पहचाना: **{doc.doc_type.replace('_', ' ')}**\n\n",
+                            "mr": f"📋 मी हे ओळखले: **{doc.doc_type.replace('_', ' ')}**\n\n",
+                        }
+                        msg = type_notice.get(lang, type_notice["en"]) + msg
+
+                _save_message(session.id, "ASSISTANT", msg, db)
+                logger.info(
+                    f"WhatsApp: OCR notification posted for citizen {citizen_ref}, "
+                    f"status={status}, mismatches={match_result.mismatched_fields}"
+                )
+
     except Exception as e:
-        logger.error(f"OCR background task error: {e}")
+        logger.error(f"OCR background task error for doc {doc_id}: {e}", exc_info=True)
+    finally:
+        db.close()
+
 
 
 @router.get("/history/{from_number}")

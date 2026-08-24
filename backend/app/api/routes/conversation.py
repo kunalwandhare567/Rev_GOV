@@ -68,9 +68,9 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
     from app.data_layer.repositories.audit_repo import AuditRepository
 
     app_repo = ApplicationRepository(db)
-    app = app_repo.get_by_id(req.application_id)
+    app = app_repo.get_by_id(req.application_id) or app_repo.get_by_number(req.application_id)
     if not app:
-        raise HTTPException(status_code=404, detail="Application not found")
+        raise HTTPException(status_code=404, detail=f"Application '{req.application_id}' not found")
 
     if app.status != AppState.PENDING_OFFICER_PRE_APPROVAL:
         raise HTTPException(
@@ -131,9 +131,16 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
         session_repo = SessionRepository(db)
         session = session_repo.load_session(app.citizen_ref)
         if session:
-            session_repo.add_message(session.session_id, "ASSISTANT", citizen_msg)
+            if decision == "APPROVE":
+                session.current_node = "PAYMENT"
+                session.payment_status = "PENDING"
+            elif decision == "REJECT":
+                session.current_node = "DOCUMENT_UPLOAD"
+            session_repo.save_session(session)
+            session_repo.add_message(session.id, "ASSISTANT", citizen_msg)
+            logger.info(f"Admin decision notification saved to citizen session {session.id}")
     except Exception as e:
-        logger.warning(f"Could not store citizen notification: {e}")
+        logger.warning(f"Could not store citizen notification: {e}", exc_info=True)
 
     return {
         "success": True,
@@ -237,14 +244,18 @@ async def upload_document(
             shutil.copyfileobj(file.file, f)
         file_ref = file_path
 
-    # Run real OCR Service (PyMuPDF for PDFs, Tesseract for images)
+    # Run real OCR Service (PyMuPDF for PDFs, Tesseract for images, Gemini Vision first)
     from app.services.ocr_service import OCRService
     ocr_svc = OCRService()
     ocr_res = ocr_svc.run_ocr(file_ref, doc_type)
     extracted_fields = ocr_res.extracted_fields
+    ocr_provider = ocr_res.provider
+    ocr_confidence = ocr_res.confidence
 
-    # Fallback if OCR returned empty
-    if not extracted_fields:
+    # Only fall back to mock if OCR returned NOTHING AT ALL (provider='mock' or empty)
+    # We must NOT overwrite Gemini/Tesseract results with mock data — that would make
+    # declared values identical to 'document' values and prevent mismatch detection.
+    if not extracted_fields or ocr_res.provider == "mock":
         app_fields = {}
         orchestrator_temp = ConversationOrchestrator(db)
         session_temp = orchestrator_temp.session_repo.load_session(citizen.citizen_ref)
@@ -252,6 +263,16 @@ async def upload_document(
             from app.data_layer.repositories.application_repo import ApplicationRepository
             app_fields = ApplicationRepository(db).get_fields(session_temp.application_id)
         extracted_fields = _mock_ocr_extract(doc_type, file.filename if file else "", app_fields)
+        logger.warning(
+            f"OCR returned no fields (provider={ocr_provider}). "
+            f"Using filename-based mock for {doc_type}. "
+            f"This means mismatch detection is operating on limited data."
+        )
+
+    logger.info(
+        f"OCR completed: provider={ocr_provider}, confidence={ocr_confidence:.2f}, "
+        f"fields={list(extracted_fields.keys())}"
+    )
 
     orchestrator = ConversationOrchestrator(db)
     result = orchestrator.process_document_upload(
@@ -299,6 +320,9 @@ async def upload_document(
         "service_type": service_id,
         "documents": documents,
         "payment_status": payment_status,
+        "ocr_provider": ocr_provider,
+        "ocr_confidence": ocr_confidence,
+        "ocr_fields_extracted": list(extracted_fields.keys()),
         **result
     }
 

@@ -9,7 +9,7 @@ import datetime
 from typing import Dict, Optional, List, Tuple, Any
 from sqlalchemy.orm import Session
 
-from app.orchestration.nlu.local_llm import LocalNLU, LiteracyAdaptiveDialogue
+from app.orchestration.nlu.local_llm import NLUService, LiteracyAdaptiveDialogue
 from app.orchestration.nlu.intent_classifier import IntentClassifier, QAHandler  # Phase 5
 from app.orchestration.nlu.field_corrector import FieldCorrector                  # Phase 5
 from app.rules_engine.engine import ServiceSpecLoader, FieldValidator, EligibilityChecker, FeeCalculator
@@ -58,7 +58,8 @@ class ConversationOrchestrator:
 
     def __init__(self, db: Session):
         self.db = db
-        self.nlu = LocalNLU()
+        # Phase 3: LLM-powered NLU (replaces Ollama LocalNLU)
+        self.nlu = NLUService()
         self.intent_clf = IntentClassifier()   # Phase 5: richer intent + slot classifier
         self.qa_handler = QAHandler()          # Phase 5: FAQ answers
         self.field_corrector = FieldCorrector()# Phase 5: field value auto-correction
@@ -66,6 +67,12 @@ class ConversationOrchestrator:
         self.app_repo = ApplicationRepository(db)
         self.citizen_repo = CitizenRepository(db)
         self.audit_repo = AuditRepository(db)
+        # Phase 5: NextQuestionEngine for dynamic slot ordering
+        from app.services.next_question_engine import NextQuestionEngine
+        self.next_q_engine = NextQuestionEngine()
+        # Phase 4+6: RAG service for knowledge-grounded answers
+        from app.services.rag_service import RAGService
+        self.rag = RAGService()
 
     def process_message(
         self,
@@ -100,7 +107,7 @@ class ConversationOrchestrator:
         if language and language != session.language:
             session.language = language
 
-        # 2. Run NLU (LocalNLU for Ollama/keyword)
+        # 2. Run NLU (NLUService — LLM-powered, no Ollama)
         nlu_result = self.nlu.analyze(text, language=session.language, context={
             "current_node": session.current_node,
             "filled_slots": session.filled_slots,
@@ -115,7 +122,9 @@ class ConversationOrchestrator:
         # Merge: prefer IntentClassifier if confidence > 0.5, else use LocalNLU
         if clf_result.get("confidence", 0) > 0.5:
             nlu_result["intent"] = clf_result["intent"]
-            nlu_result["service_type"] = clf_result.get("service_type") or nlu_result.get("service_type")
+            nlu_result["service_type"] = self._normalize_service_id(
+                clf_result.get("service_type") or nlu_result.get("service_type"), text
+            )
             # Merge entities
             nlu_result.setdefault("entities", {}).update(clf_result.get("entities", {}))
 
@@ -280,9 +289,55 @@ class ConversationOrchestrator:
             })
             return msg, "CONSENT", {}
 
+    @staticmethod
+    def _normalize_service_id(service_raw: Optional[str], text: str = "") -> Optional[str]:
+        """Maps LLM service type variants to valid system service IDs."""
+        if service_raw:
+            clean = str(service_raw).strip().lower().replace(" ", "_").replace("-", "_")
+            alias_map = {
+                "income_certificate": "income_certificate",
+                "income": "income_certificate",
+                "get_income": "income_certificate",
+                "income_proof": "income_certificate",
+                "finance": "income_certificate",
+
+                "caste_certificate": "caste_certificate",
+                "caste": "caste_certificate",
+                "get_caste": "caste_certificate",
+
+                "domicile_certificate": "domicile_certificate",
+                "domicile": "domicile_certificate",
+                "get_domicile": "domicile_certificate",
+                "residence_certificate": "domicile_certificate",
+
+                "obc_ncl_certificate": "obc_ncl_certificate",
+                "obc": "obc_ncl_certificate",
+                "obc_ncl": "obc_ncl_certificate",
+            }
+            if clean in alias_map:
+                return alias_map[clean]
+
+            for valid_id in ["income_certificate", "caste_certificate", "domicile_certificate", "obc_ncl_certificate"]:
+                if valid_id in clean or clean in valid_id:
+                    return valid_id
+
+        # Text keyword fallback for generic LLM values (e.g. "Government_Services", "FINANCE")
+        t = (text or "").lower()
+        if any(k in t for k in ["income", "आय", "उत्पन्न"]):
+            return "income_certificate"
+        if any(k in t for k in ["caste", "जाति", "जाती"]):
+            return "caste_certificate"
+        if any(k in t for k in ["domicile", "residence", "अधिवास", "रहवासी"]):
+            return "domicile_certificate"
+        if any(k in t for k in ["obc", "ncl", "non creamy", "नॉन क्रीमी"]):
+            return "obc_ncl_certificate"
+        return None
+
     def _handle_intent(self, session, nlu_result):
         """INTENT_DETECTION: Identify service type and move to slot filling."""
-        service_type = nlu_result.get("service_type")
+        raw_service = nlu_result.get("service_type")
+        raw_text = nlu_result.get("raw_text", "")
+        service_type = self._normalize_service_id(raw_service, raw_text)
         intent = nlu_result.get("intent")
 
         if intent == "STATUS_QUERY":
@@ -294,7 +349,6 @@ class ConversationOrchestrator:
                 "STATUS_QUERY",
                 {},
             )
-
         if intent == "ESCALATION":
             return self._handle_escalation(session, nlu_result)
 
@@ -331,7 +385,46 @@ class ConversationOrchestrator:
                 {},
             )
 
-        # Create application
+        # ── Phase 12: Application Deduplication ──
+        # If citizen already has an active application for this service
+        # (started via WhatsApp, Web, or IVR), resume it instead of creating a new one.
+        existing_app = self.app_repo.get_active_by_citizen_service(
+            citizen_ref=session.citizen_ref,
+            service_id=service_type,
+        )
+        if existing_app:
+            session.application_id = existing_app.id
+            # Restore filled slots from DB
+            session.filled_slots = self.app_repo.get_fields(existing_app.id) or {}
+            all_slots = [s.name for s in spec.slots if s.required]
+            session.missing_slots = [s for s in all_slots if s not in session.filled_slots]
+            service_name = spec.name.get(session.language, spec.name.get("en", service_type)) \
+                if isinstance(spec.name, dict) else str(spec.name)
+
+            resume_msg = self._multilang_msg(session.language, {
+                "en": (
+                    f"📋 Welcome back! You already have an application in progress:\n"
+                    f"Application No: **{existing_app.application_number}**\n"
+                    f"Status: {existing_app.status}\n"
+                    f"Fields filled: {len(session.filled_slots)}/{len(all_slots)}\n\n"
+                    f"Resuming your {service_name} application. "
+                    + (self._get_next_slot_prompt(session, spec) if session.missing_slots else "All fields are filled. Type 'next' to proceed to documents.")
+                ),
+                "hi": (
+                    f"📋 वापस स्वागत है! आपका पहले से एक आवेदन चल रहा है:\n"
+                    f"आवेदन संख्या: **{existing_app.application_number}**\n"
+                    f"स्थिति: {existing_app.status}\n\n"
+                    f"{service_name} आवेदन फिर से शुरू हो रहा है। "
+                    + (self._get_next_slot_prompt(session, spec) if session.missing_slots else "सभी विवरण भर गए हैं। अगले चरण के लिए 'आगे' टाइप करें।")
+                ),
+            })
+            return resume_msg, "SLOT_FILLING", {
+                "application_id": existing_app.id,
+                "application_number": existing_app.application_number,
+                "resumed": True,
+            }
+
+        # Create NEW application
         app = self.app_repo.create(
             citizen_ref=session.citizen_ref,
             service_id=service_type,
@@ -376,94 +469,144 @@ class ConversationOrchestrator:
         return msg, "SLOT_FILLING", {"application_id": app.id, "application_number": app.application_number}
 
     def _handle_slot_filling(self, session, nlu_result, raw_text):
-        """SLOT_FILLING: Iteratively collect required form fields."""
+        """SLOT_FILLING: Iteratively collect required form fields.
+
+        Phase 5: Uses NextQuestionEngine for dynamic slot ordering (not hardcoded list).
+        Phase 6: Cross-question detection — if citizen asks a digression,
+                 handle it via RAG+LLM and return to the same pending slot.
+        """
         if not session.application_id:
             return self._handle_intent(session, nlu_result)
 
-        spec = ServiceSpecLoader.get(
-            self.app_repo.get_by_id(session.application_id).service_id
-        )
+        db_app = self.app_repo.get_by_id(session.application_id)
+        if not db_app:
+            return "Application not found.", "ESCALATION", {}
+
+        spec = ServiceSpecLoader.get(db_app.service_id)
         if not spec:
             return "Service spec not found.", "ESCALATION", {}
 
+        # ── Phase 6: Cross-question detection ──
+        if nlu_result.get("is_cross_question") or self._is_cross_question(raw_text):
+            return self._handle_cross_question(
+                session, raw_text, nlu_result, spec
+            )
+
         entities = nlu_result.get("entities", {})
-        missing = list(session.missing_slots)
+
+        # ── Phase 5: Get next slot via NextQuestionEngine ──
+        # This respects YAML order, OCR-prefilled fields, and validation errors.
+        ocr_fields = getattr(session, "ocr_fields", {}) or {}
+        validation_errors = {e: "invalid" for e in (session.validation_errors or [])}
+
+        nq_result = self.next_q_engine.get_next_slot(
+            service_id=db_app.service_id,
+            filled_slots=session.filled_slots or {},
+            ocr_fields=ocr_fields,
+            validation_errors=validation_errors,
+        )
+
+        slot_map = {s.name: s for s in spec.slots}
+        next_missing = nq_result.slot_name  # None if all filled
 
         # Try to fill the next missing slot from the utterance
         filled_something = False
-        next_missing = missing[0] if missing else None
 
-        # Map slot name → spec
-        slot_map = {s.name: s for s in spec.slots}
-
-        # Try to match current utterance to the currently expected slot
         if next_missing and next_missing in slot_map:
             slot = slot_map[next_missing]
             candidate_value = entities.get(next_missing) or raw_text.strip()
 
-            # ── Phase 5: Auto-correct field value before validation ──
+            # ── Auto-correct field value before validation ──
             corrected_value, was_corrected, correction_note = self.field_corrector.correct(
                 next_missing, candidate_value, session.language
             )
             if was_corrected:
-                logger.info(f"FieldCorrector [{next_missing}]: {candidate_value!r} → {corrected_value!r} ({correction_note})")
+                logger.info(f"FieldCorrector [{next_missing}]: {candidate_value!r} -> {corrected_value!r} ({correction_note})")
                 candidate_value = corrected_value
 
             valid, error = FieldValidator.validate_slot(slot, candidate_value, session.language)
             if valid:
                 session.filled_slots = {**session.filled_slots, next_missing: candidate_value}
-                session.missing_slots = [s for s in session.missing_slots if s != next_missing]
-                missing.remove(next_missing)
+                if next_missing in (session.missing_slots or []):
+                    session.missing_slots = [s for s in session.missing_slots if s != next_missing]
                 filled_something = True
 
-                # Save to DB (with corrected value + source channel)
+                # Save to DB
                 self.app_repo.save_field(
                     session.application_id, next_missing, candidate_value, slot.classification
                 )
             else:
                 error_msg = self._multilang_msg(session.language, {
-                    "en": f"⚠️ {error} Please try again.",
-                    "hi": f"⚠️ {error} कृपया पुनः प्रयास करें।",
+                    "en": f"\u26a0\ufe0f {error} Please try again.",
+                    "hi": f"\u26a0\ufe0f {error} \u0915\u0943\u092a\u092f\u093e \u092a\u0941\u0928\u0903 \u092a\u094d\u0930\u092f\u093e\u0938 \u0915\u0930\u0947\u0902\u0964",
                 })
-                session.validation_errors = session.validation_errors + [error]
-                return error_msg, "SLOT_FILLING", {}
-
+                session.validation_errors = (session.validation_errors or []) + [error]
+                return error_msg, "SLOT_FILLING", {"field": next_missing, "error": error}
 
         # Also fill from NLU entities for other slots
         for slot_name, value in entities.items():
-            if slot_name in slot_map and slot_name in session.missing_slots:
-                slot = slot_map[slot_name]
-                valid, _ = FieldValidator.validate_slot(slot, value, session.language)
+            if slot_name in slot_map and slot_name not in (session.filled_slots or {}):
+                sl = slot_map[slot_name]
+                valid, _ = FieldValidator.validate_slot(sl, value, session.language)
                 if valid:
                     session.filled_slots = {**session.filled_slots, slot_name: value}
-                    session.missing_slots = [s for s in session.missing_slots if s != slot_name]
+                    if slot_name in (session.missing_slots or []):
+                        session.missing_slots = [s for s in session.missing_slots if s != slot_name]
                     self.app_repo.save_field(
-                        session.application_id, slot_name, value, slot.classification
+                        session.application_id, slot_name, value, sl.classification
                     )
 
-        # Check if all slots filled
-        if not session.missing_slots:
-            # Move to document capture
+        # Re-compute after filling
+        nq_result = self.next_q_engine.get_next_slot(
+            service_id=db_app.service_id,
+            filled_slots=session.filled_slots or {},
+            ocr_fields=ocr_fields,
+        )
+
+        if not nq_result.has_next:
+            # All slots filled — move to document capture
             if spec.required_docs:
+                doc_list = []
+                for d in spec.required_docs:
+                    if isinstance(d, dict):
+                        doc_list.append(f"\ud83d\udcc4 {d.get('type', d)}: {', '.join(d.get('accepted', []))}")
+                    else:
+                        doc_list.append(f"\ud83d\udcc4 {d}")
+
                 msg = self._multilang_msg(session.language, {
                     "en": (
-                        "✅ All details collected! Now please upload your documents:\n" +
-                        "\n".join([f"📄 {d['type']}: {', '.join(d.get('accepted', []))}" for d in spec.required_docs]) +
-                        "\n\nPlease type 'skip documents' if using demo mode, or describe the document you're uploading."
+                        "\u2705 All details collected! Now please upload your documents:\n" +
+                        "\n".join(doc_list) +
+                        "\n\nUse the attachment button or describe the document you're uploading."
                     ),
                     "hi": (
-                        "✅ सभी जानकारी एकत्र हो गई! अब कृपया दस्तावेज़ अपलोड करें:\n" +
-                        "\n".join([f"📄 {d['type']}" for d in spec.required_docs]) +
-                        "\n\nडेमो मोड में 'दस्तावेज़ छोड़ें' टाइप करें।"
+                        "\u2705 \u0938\u092d\u0940 \u091c\u093e\u0928\u0915\u093e\u0930\u0940 \u090f\u0915\u0924\u094d\u0930 \u0939\u094b \u0917\u0908! \u0905\u092c \u0915\u0943\u092a\u092f\u093e \u0926\u0938\u094d\u0924\u093e\u0935\u0947\u091c\u093c \u0905\u092a\u0932\u094b\u0921 \u0915\u0930\u0947\u0902:\n" +
+                        "\n".join([f"\ud83d\udcc4 {d.get('type', d) if isinstance(d, dict) else d}" for d in spec.required_docs])
                     ),
                 })
-                return msg, "DOCUMENT_CAPTURE", {}
+                return msg, "DOCUMENT_CAPTURE", {
+                    "completion_pct": nq_result.completion_percentage,
+                    "filled_count": nq_result.filled_count,
+                }
             else:
                 return self._handle_validation(session)
 
-        # More slots to fill — get next prompt
-        next_slot_prompt = self._get_next_slot_prompt(session, spec)
-        return next_slot_prompt, "SLOT_FILLING", {}
+        # More slots — generate next question via LLM (Phase 5)
+        next_slot_prompt = self._get_next_slot_prompt_llm(
+            session, spec, nq_result
+        )
+        progress_note = f" ({nq_result.filled_count}/{nq_result.total_required} fields)"
+
+        return (
+            f"{next_slot_prompt}{progress_note}",
+            "SLOT_FILLING",
+            {
+                "next_slot": nq_result.slot_name,
+                "completion_pct": nq_result.completion_percentage,
+                "filled_count": nq_result.filled_count,
+                "total_required": nq_result.total_required,
+            },
+        )
 
     def _handle_document_capture(self, session, nlu_result):
         """DOCUMENT_CAPTURE: Guide document upload, then route to Admin pre-approval."""
@@ -775,16 +918,146 @@ class ConversationOrchestrator:
 
     # ── Helpers ──
 
+    def _handle_cross_question(self, session, raw_text: str, nlu_result: dict, spec) -> tuple:
+        """
+        Phase 6 — Cross-Question Handler.
+
+        When a citizen asks a digression (e.g., "why do you need my father's name?"),
+        we:
+          1. Retrieve relevant knowledge from the RAG knowledge base.
+          2. Ask LLM to answer using ONLY retrieved context (no hallucination).
+          3. After answering, prompt the citizen to return to the PENDING slot.
+
+        The pending slot is preserved throughout the digression.
+        """
+        from app.llm.llm_service import LLMService
+        llm = LLMService()
+
+        # Identify what slot was being asked about
+        db_app = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+        service_id = db_app.service_id if db_app else None
+
+        # Get the current pending slot from NextQuestionEngine
+        ocr_fields = getattr(session, "ocr_fields", {}) or {}
+        nq_result = self.next_q_engine.get_next_slot(
+            service_id=service_id or "",
+            filled_slots=session.filled_slots or {},
+            ocr_fields=ocr_fields,
+        )
+        pending_field = nq_result.slot_name  # The slot we were about to ask
+
+        # Retrieve knowledge chunks for this question
+        chunks = self.rag.retrieve(
+            question=raw_text,
+            service_id=service_id,
+            max_chunks=4,
+        )
+
+        if chunks:
+            # RAG-grounded answer via LLM
+            try:
+                answer = llm.answer_rag(
+                    question=raw_text,
+                    knowledge_chunks=chunks,
+                    language=session.language,
+                )
+            except Exception as e:
+                logger.warning(f"RAG LLM answer failed: {e}")
+                answer = self._multilang_msg(session.language, {
+                    "en": "I don't have specific information on that, but your local Seva Kendra can help.",
+                    "hi": "इस बारे में मुझे विशेष जानकारी नहीं है, लेकिन आपका स्थानीय सेवा केंद्र सहायता कर सकता है।",
+                    "mr": "याबद्दल माझ्याकडे विशिष्ट माहिती नाही, पण स्थानिक सेवा केंद्र मदत करू शकते.",
+                })
+        else:
+            # No relevant knowledge found
+            answer = self._multilang_msg(session.language, {
+                "en": "I don't have specific information on that. Please contact your nearest Seva Kendra.",
+                "hi": "इस बारे में मुझे जानकारी नहीं है। कृपया निकटतम सेवा केंद्र से संपर्क करें।",
+                "mr": "याबद्दल माझ्याकडे माहिती नाही. कृपया जवळच्या सेवा केंद्राशी संपर्क करा.",
+            })
+
+        # Pivot back to pending slot
+        if pending_field:
+            db_app_for_spec = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+            spec_for_pending = ServiceSpecLoader.get(db_app_for_spec.service_id) if db_app_for_spec else spec
+            slot_map = {s.name: s for s in spec_for_pending.slots} if spec_for_pending else {}
+            slot = slot_map.get(pending_field)
+
+            if slot:
+                pending_prompt = LiteracyAdaptiveDialogue.get_slot_prompt(
+                    slot, session.language, session.literacy_level or "MEDIUM"
+                )
+            else:
+                pending_prompt = f"Please provide your {pending_field.replace('_', ' ')}:"
+
+            pivot_suffix = self._multilang_msg(session.language, {
+                "en": f"\n\nNow, back to your application — {pending_prompt}",
+                "hi": f"\n\nअब, आपके आवेदन पर वापस आते हैं — {pending_prompt}",
+                "mr": f"\n\nआता, तुमच्या अर्जावर परत येऊ — {pending_prompt}",
+            })
+            full_response = answer + pivot_suffix
+        else:
+            full_response = answer
+
+        return full_response, "SLOT_FILLING", {
+            "cross_question": True,
+            "pending_field": pending_field,
+        }
+
+    def _get_next_slot_prompt_llm(self, session, spec, nq_result) -> str:
+        """
+        Phase 5: Generate the next slot question via LLM (dynamic, natural language).
+        Falls back to YAML static prompt if LLM fails.
+        """
+        if not nq_result.slot_name or not nq_result.slot_spec:
+            return self._get_next_slot_prompt(session, spec)
+
+        try:
+            from app.llm.llm_service import LLMService
+            llm = LLMService()
+            service_name = spec.name.get(session.language, spec.name.get("en", spec.id)) \
+                if isinstance(spec.name, dict) else str(spec.name)
+            return llm.generate_slot_prompt(
+                slot_name=nq_result.slot_name,
+                slot_spec=nq_result.slot_spec,
+                language=session.language,
+                context={
+                    "service_name": service_name,
+                    "filled_count": nq_result.filled_count,
+                    "total_required": nq_result.total_required,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"LLM slot prompt failed, using YAML fallback: {e}")
+            return self._get_next_slot_prompt(session, spec)
+
     def _get_next_slot_prompt(self, session, spec) -> str:
-        """Get prompt for the next missing slot."""
+        """Get static YAML prompt for the next missing slot (fallback)."""
         if not session.missing_slots:
             return ""
+        # Phase 5: Try NextQuestionEngine first
+        ocr_fields = getattr(session, "ocr_fields", {}) or {}
+        db_app = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+        if db_app:
+            nq = self.next_q_engine.get_next_slot(
+                service_id=db_app.service_id,
+                filled_slots=session.filled_slots or {},
+                ocr_fields=ocr_fields,
+            )
+            if nq.has_next:
+                slot_map = {s.name: s for s in spec.slots}
+                slot = slot_map.get(nq.slot_name)
+                if slot:
+                    return LiteracyAdaptiveDialogue.get_slot_prompt(
+                        slot, session.language, session.literacy_level or "MEDIUM"
+                    )
+        # Fallback: old hardcoded order
         next_slot_name = session.missing_slots[0]
         slot_map = {s.name: s for s in spec.slots}
         slot = slot_map.get(next_slot_name)
         if not slot:
             return f"Please provide: {next_slot_name}"
-        return LiteracyAdaptiveDialogue.get_slot_prompt(slot, session.language, session.literacy_level)
+        return LiteracyAdaptiveDialogue.get_slot_prompt(slot, session.language, session.literacy_level or "MEDIUM")
 
     def _multilang_msg(self, language: str, messages: Dict[str, str]) -> str:
         """Return message in preferred language, falling back to English."""
@@ -797,13 +1070,16 @@ class ConversationOrchestrator:
     def process_document_upload(
         self, citizen_ref: str, doc_type: str, file_ref: str, extracted_fields: Dict
     ) -> Dict:
-        """Handle document upload and cross-reference check."""
-        import os
+        """
+        Handle document upload, run OCR cross-reference matching,
+        generate a structured mismatch report, store it as a chat message
+        so the citizen sees it immediately, and return a full ValidationReport.
+        """
         session = self.session_repo.load_session(citizen_ref)
         if not session or not session.application_id:
             return {"error": "No active session found"}
 
-        # Special Case: PAYMENT_RECEIPT
+        # ── Special Case: PAYMENT_RECEIPT ─────────────────────────────────
         if doc_type == "PAYMENT_RECEIPT":
             amount = 50.0
             if "amount" in extracted_fields:
@@ -814,32 +1090,22 @@ class ConversationOrchestrator:
             import uuid
             txn_id = extracted_fields.get("transaction_id") or f"UPI{str(uuid.uuid4())[:8].upper()}"
 
-            # Save payment record
             payment = self.app_repo.create_payment(session.application_id, amount, txn_id)
             self.app_repo.update_payment_status(txn_id, "SUCCESS")
-
-            # Transition application to SUBMITTED and payment to PAID
             session.payment_status = "PAID"
             session.current_node = "SUBMISSION"
-
             self.app_repo.update_status(session.application_id, "SUBMITTED")
 
-            # Write audit logs
             self.audit_repo.write(
-                event_type="PAYMENT",
-                actor="OCR_RECEIPT_VERIFIER",
-                citizen_ref=citizen_ref,
-                application_id=session.application_id,
-                action=f"Payment verified via receipt upload: amount ₹{amount}, TXN {txn_id}",
+                event_type="PAYMENT", actor="OCR_RECEIPT_VERIFIER",
+                citizen_ref=citizen_ref, application_id=session.application_id,
+                action=f"Payment verified via receipt upload: ₹{amount}, TXN {txn_id}",
                 outcome="SUCCESS",
             )
             self.audit_repo.write(
-                event_type="SUBMISSION",
-                actor="CITIZEN",
-                citizen_ref=citizen_ref,
-                application_id=session.application_id,
-                action=f"Application submitted after payment validation",
-                outcome="SUCCESS",
+                event_type="SUBMISSION", actor="CITIZEN",
+                citizen_ref=citizen_ref, application_id=session.application_id,
+                action="Application submitted after payment validation", outcome="SUCCESS",
             )
 
             self.session_repo.save_session(session)
@@ -847,7 +1113,6 @@ class ConversationOrchestrator:
 
             app = self.app_repo.get_by_id(session.application_id)
             app_num = app.application_number if app else ""
-
             response_msg = (
                 f"🎉 Payment verified successfully!\n"
                 f"💳 Transaction ID: {txn_id}\n"
@@ -855,102 +1120,207 @@ class ConversationOrchestrator:
                 f"Your application has been submitted. Tracking ID: **{app_num}**."
             )
 
+            # Store as chat message so citizen sees it immediately
+            self.session_repo.add_message(
+                session_id=session.id, role="ASSISTANT", content=response_msg,
+                language=session.language, modality="TEXT",
+            )
+
             return {
                 "doc_id": payment.id,
                 "verification_status": "VERIFIED",
                 "mismatch_fields": [],
+                "matched_fields": [],
+                "fields_not_in_doc": [],
                 "confidence_score": 1.0,
                 "response": response_msg,
                 "current_node": "SUBMISSION",
                 "payment_status": "PAID",
             }
 
-        # Perturb names for demo mismatch purposes if exactly same
-        if "applicant_name" in session.filled_slots and doc_type in ("IDENTITY_PROOF", "ADDRESS_PROOF", "RESIDENCE_PROOF"):
-            declared_name = session.filled_slots["applicant_name"]
-            ocr_name = extracted_fields.get("applicant_name")
-            if ocr_name and ocr_name == declared_name:
-                parts = declared_name.split(" ")
-                if len(parts) >= 2:
-                    extracted_fields["applicant_name"] = f"{parts[0]} S. {' '.join(parts[1:])}"
-                else:
-                    extracted_fields["applicant_name"] = declared_name + " Sr."
+        # ── Step A: Structured Log & Auto-prefill slots from OCR ─────────────
+        logger.info(
+            f"[OCR_DOCUMENT_PROCESSING] Citizen={citizen_ref}, ApplicationId={session.application_id}, "
+            f"DocType={doc_type}, ExtractedFields={list(extracted_fields.keys())}"
+        )
 
-        # Cross-reference compare
-        from difflib import SequenceMatcher
-        mismatch_fields = []
-        similarities = []
+        prefilled_count = 0
+        if extracted_fields and session.application_id:
+            db_app = self.app_repo.get_by_id(session.application_id)
+            if db_app:
+                spec = ServiceSpecLoader.get(db_app.service_id)
+                slot_map = {s.name: s for s in spec.slots} if spec and spec.slots else {}
+                ocr_fields = getattr(session, "ocr_fields", {}) or {}
 
-        # Helper similarity checker
-        def check_field(field_name, exact=False, threshold=0.9):
-            if field_name in extracted_fields and field_name in session.filled_slots:
-                v1 = str(extracted_fields[field_name]).strip().lower()
-                v2 = str(session.filled_slots[field_name]).strip().lower()
-                if exact:
-                    match = v1 == v2
-                    similarities.append(1.0 if match else 0.0)
-                    if not match:
-                        mismatch_fields.append(field_name)
-                else:
-                    ratio = SequenceMatcher(None, v1, v2).ratio()
-                    similarities.append(ratio)
-                    if ratio < threshold:
-                        mismatch_fields.append(field_name)
+                for field_name, val in extracted_fields.items():
+                    if val is not None and str(val).strip():
+                        val_str = str(val).strip()
+                        ocr_fields[field_name] = val_str
+                        if field_name in slot_map and field_name not in (session.filled_slots or {}):
+                            sl = slot_map[field_name]
+                            valid, _ = FieldValidator.validate_slot(sl, val_str, session.language)
+                            if valid:
+                                session.filled_slots = {**session.filled_slots, field_name: val_str}
+                                if field_name in (session.missing_slots or []):
+                                    session.missing_slots = [s for s in session.missing_slots if s != field_name]
+                                self.app_repo.save_field(
+                                    session.application_id, field_name, val_str, sl.classification, source="OCR"
+                                )
+                                prefilled_count += 1
 
-        # Run checks based on what slots are filled and OCR extracted
-        check_field("applicant_name", exact=False, threshold=0.9)
-        check_field("applicant_dob", exact=True)
-        check_field("aadhaar_number", exact=True)
-        check_field("address", exact=False, threshold=0.75)
-        check_field("caste_category", exact=True)
-        check_field("caste_name", exact=False, threshold=0.9)
+                session.ocr_fields = ocr_fields
 
-        # Delta checking for annual income
-        delta_pct = 0.0
-        if "annual_income" in extracted_fields and "annual_income" in session.filled_slots:
-            try:
-                doc_income = float(str(extracted_fields["annual_income"]).replace(",", ""))
-                declared = float(str(session.filled_slots["annual_income"]).replace(",", ""))
-                if declared > 0:
-                    delta_pct = abs(doc_income - declared) / declared
-                    similarities.append(max(0.0, 1.0 - delta_pct))
-                    if delta_pct > 0.20:
-                        mismatch_fields.append("annual_income")
-                else:
-                    similarities.append(0.0)
-                    mismatch_fields.append("annual_income")
-            except (ValueError, TypeError):
-                similarities.append(0.0)
-                mismatch_fields.append("annual_income")
+        logger.info(
+            f"[OCR_SLOT_PREFILL] Auto-prefilled {prefilled_count} missing application slots from OCR document proof."
+        )
 
-        confidence_score = sum(similarities) / len(similarities) if similarities else 1.0
-        status = "MISMATCH" if mismatch_fields else "VERIFIED"
+        # ── Cross-reference: compare declared chat slots vs OCR fields ─────
+        from app.services.matching_service import MatchingService
+        matcher = MatchingService()
 
+        # Pass doc_type so priority fields for that document type are considered
+        match_res = matcher.compare_document(
+            session.filled_slots, extracted_fields, doc_type=doc_type
+        )
+
+        mismatch_fields = match_res.mismatched_fields
+        fields_not_in_doc = match_res.fields_only_in_app   # Declared but not in OCR
+        confidence_score = (match_res.overall_score / 100.0) if match_res.overall_score is not None else 1.0
+
+        # Determine verification status
+        if mismatch_fields:
+            status = "MISMATCH"
+        elif match_res.overall_score == 0.0 and not match_res.matched_fields:
+            status = "INCOMPLETE"   # OCR returned nothing useful
+        else:
+            status = "VERIFIED"
+
+        # Save document record
         doc = self.app_repo.save_document(
             session.application_id, doc_type, file_ref, extracted_fields, confidence_score
         )
         self.app_repo.update_document_verification(doc.id, status, mismatch_fields)
-
         session.document_refs = session.document_refs + [doc.id]
 
-        response_msg = f"📄 Document of type '{doc_type}' uploaded and verified successfully."
-        if mismatch_fields:
-            response_msg = (
-                f"⚠️ **OCR Mismatch Detected in Document** ({doc_type})!\n\n"
-                f"The following fields differ between your document and declared details:\n"
-                + "\n".join([f"- **{f.replace('_', ' ').title()}**: Declared: `{session.filled_slots.get(f)}` vs OCR: `{extracted_fields.get(f)}`" for f in mismatch_fields])
-                + f"\n\nMatch Confidence Score: **{confidence_score * 100:.1f}%**.\n"
-                f"Please choose whether to **Use Document Value** or **Keep Declared Value** using the choices in the Form side-panel or inline options."
+        # ── Generate response message ──────────────────────────────────────
+        if status == "VERIFIED":
+            response_msg = matcher._all_match_message(match_res, session.language)
+
+        elif status == "INCOMPLETE":
+            msgs = {
+                "en": (
+                    f"📄 Document ({doc_type}) uploaded.\n"
+                    f"⚠️ No text could be extracted from this document. "
+                    f"Please ensure the image is clear and Tesseract OCR is installed "
+                    f"at C:\\Program Files\\Tesseract-OCR\\tesseract.exe."
+                ),
+                "hi": (
+                    f"📄 आपका दस्तावेज़ ({doc_type}) अपलोड हो गया।\n"
+                    f"⚠️ दस्तावेज़ से कोई भी फ़ील्ड निकाला नहीं जा सका। "
+                    f"Tesseract OCR इंस्टॉल होना आवश्यक है।"
+                ),
+                "mr": (
+                    f"📄 तुमचे कागदपत्र ({doc_type}) अपलोड झाले.\n"
+                    f"⚠️ कागदपत्रातून कोणताही तपशील काढता आला नाही."
+                ),
+            }
+            response_msg = msgs.get(session.language, msgs["en"])
+
+        else:
+            # MISMATCH — use MatchingService (tries Gemini, then structured template)
+            response_msg = matcher.generate_mismatch_message(
+                match_res, language=session.language, use_gemini=True
             )
+
+        # ── State transition & Next Process Connection ──────────────────────
+        if status == "MISMATCH":
+            if _valid_transition(session.current_node, "CORRECTION_PROMPT"):
+                session.current_node = "CORRECTION_PROMPT"
+                logger.info(f"[OCR_STATE_CONNECT] Mismatch detected. Transitioned state to CORRECTION_PROMPT")
+        elif status == "VERIFIED":
+            if session.current_node in ("DOCUMENT_CAPTURE", "DOCUMENT_VERIFY"):
+                db_app = self.app_repo.get_by_id(session.application_id)
+                if db_app:
+                    spec = ServiceSpecLoader.get(db_app.service_id)
+                    req_docs = [d["type"] if isinstance(d, dict) else d for d in (spec.required_docs if spec else [])]
+                    uploaded_docs = [d.doc_type for d in (db_app.documents or []) if d.verification_status != "REJECTED"]
+                    if all(rd in uploaded_docs for rd in req_docs):
+                        from app.orchestration.state_machine.application_fsm import AppState
+                        self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
+                        logger.info(f"[OCR_STATE_CONNECT] All proof documents verified for App {session.application_id}. Transitioned status to PENDING_OFFICER_PRE_APPROVAL")
+
+        # ── Store as chat message — CRITICAL: citizen must see this in chat ─
+        self.session_repo.add_message(
+            session_id=session.id,
+            role="ASSISTANT",
+            content=response_msg,
+            language=session.language,
+            modality="TEXT",
+        )
+
+        # ── Audit log ──────────────────────────────────────────────────────
+        self.audit_repo.write(
+            event_type="DOCUMENT_VERIFIED",
+            actor="OCR_ENGINE",
+            citizen_ref=citizen_ref,
+            application_id=session.application_id,
+            action=(
+                f"Document {doc_type} processed. Status={status}. "
+                f"Matched={len(match_res.matched_fields)}, "
+                f"Mismatched={len(mismatch_fields)}, "
+                f"NotInDoc={len(fields_not_in_doc)}, "
+                f"Score={match_res.overall_score:.1f}%"
+            ),
+            outcome=status,
+            metadata={
+                "doc_id": doc.id,
+                "doc_type": doc_type,
+                "matched_fields": match_res.matched_fields,
+                "mismatch_fields": mismatch_fields,
+                "fields_not_in_doc": fields_not_in_doc,
+                "overall_score": match_res.overall_score,
+            },
+        )
 
         self.session_repo.save_session(session)
         self.db.commit()
+
+        # Build full validation report for frontend
+        report = matcher.build_validation_report(match_res)
 
         return {
             "doc_id": doc.id,
             "verification_status": status,
             "mismatch_fields": mismatch_fields,
+            "matched_fields": match_res.matched_fields,
+            "fields_not_in_doc": fields_not_in_doc,
+            "fields_in_doc_only": match_res.fields_only_in_doc,
             "confidence_score": confidence_score,
+            "overall_score": match_res.overall_score,
+            "field_scores": match_res.field_scores,
+            "can_auto_resolve": report.can_auto_resolve,
+            "verdict": report.verdict,
+            "summary": report.summary,
             "response": response_msg,
+            "current_node": session.current_node,
         }
+
+    def _is_cross_question(self, text: str) -> bool:
+        """Check if input is a cross-question/digression rather than a slot answer."""
+        text_lower = text.strip().lower()
+        question_words = ["why", "what", "how", "where", "when", "can i", "is it", "का", "क्यों", "क्या", "कैसे"]
+        is_q = any(w in text_lower for w in question_words) or text_lower.endswith("?")
+        return is_q and len(text_lower.split()) > 2
+
+    def _handle_cross_question(self, session, raw_text, nlu_result, spec):
+        """Answer citizen digression using RAG/LLM, then resume pending slot."""
+        rag_answer = self.rag.answer_question(raw_text, session.language)
+        next_prompt = self._get_next_slot_prompt(session, spec)
+        combined_response = f"{rag_answer}\n\n{next_prompt}"
+        return combined_response, "SLOT_FILLING", {"cross_question_handled": True}
+
+
+
+
+
 

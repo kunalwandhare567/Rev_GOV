@@ -172,3 +172,32 @@ def sanitize_tracking_response(app_data: dict) -> dict:
         "timeline",
     }
     return {k: v for k, v in app_data.items() if k in SAFE_FIELDS}
+
+
+# ── Admin Auth Dependency ─────────────────────────────────────────────────
+
+def require_admin(request: Request):
+    """
+    FastAPI dependency: validates admin Bearer token.
+    In POC mode: accepts any non-empty token OR the ADMIN_SECRET env var.
+    In production: replace with JWT validation.
+    """
+    import os
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+
+    # POC mode: accept any token (can be tightened later)
+    admin_secret = os.getenv("ADMIN_SECRET_KEY", "")
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Admin authentication required. Include Authorization: Bearer <token> header.",
+        )
+
+    if admin_secret and token != admin_secret:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid admin token.",
+        )
+
+    return {"role": "ADMIN", "token": token}

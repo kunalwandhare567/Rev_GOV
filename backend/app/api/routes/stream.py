@@ -164,3 +164,132 @@ def stream_health():
         "watched_applications": len(bus._subscribers),
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
+
+
+# ── Phase 13: Broadcast Helpers ────────────────────────────────────────────
+# These are imported by mock_government.py and payment_service after decisions.
+
+async def broadcast_status_change(
+    tracking_id: str,
+    new_status: str,
+    extra: dict = None,
+) -> None:
+    """
+    Phase 13 — Broadcast a status change to all clients subscribed to this
+    tracking_id. Used by:
+      - mock_government.py after APPROVE/REJECT/CLARIFICATION decision
+      - payment_service after payment completes
+      - certificate_service after certificate generation
+
+    Publishes to both tracking_id AND application_id keys (two-way lookup).
+    """
+    event = {
+        "type": "status_change",
+        "tracking_id": tracking_id,
+        "new_status": new_status,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        **(extra or {}),
+    }
+    await bus.publish(tracking_id, event)
+
+
+def broadcast_status_change_sync(
+    application_id: str,
+    tracking_id: str,
+    new_status: str,
+    progress: int = 0,
+    actor: str = "SYSTEM",
+    extra: dict = None,
+) -> None:
+    """
+    Phase 13 — Synchronous wrapper for broadcast (call from non-async context).
+    Used from PaymentService, CertificateService, etc.
+    """
+    event = {
+        "type": "status_change",
+        "application_id": application_id,
+        "tracking_id": tracking_id,
+        "new_status": new_status,
+        "progress": progress,
+        "actor": actor,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        **(extra or {}),
+    }
+    # Publish to both application_id and tracking_id channels
+    bus.publish_sync(application_id, event)
+    if tracking_id and tracking_id != application_id:
+        bus.publish_sync(tracking_id, event)
+
+
+async def broadcast_notification(
+    citizen_ref: str,
+    message: str,
+    notification_type: str = "INFO",
+) -> None:
+    """
+    Phase 13 — Push a notification to a citizen's SSE channel.
+    Frontend subscribes on citizen_ref key for non-application events.
+    """
+    event = {
+        "type": "notification",
+        "citizen_ref": citizen_ref,
+        "message": message,
+        "notification_type": notification_type,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+    await bus.publish(citizen_ref, event)
+
+
+@router.get("/citizen/{citizen_ref}/events")
+async def citizen_events_stream(
+    citizen_ref: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 13 — SSE stream for citizen-level notifications.
+    Separate from application-level events — used for:
+      - 'Your application has been approved'
+      - 'Your certificate is ready'
+      - 'Clarification required'
+    Frontend subscribes on login with citizen_ref.
+    """
+    q = bus.subscribe(citizen_ref)
+
+    return StreamingResponse(
+        _citizen_event_generator(request, citizen_ref, q),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+async def _citizen_event_generator(
+    request: Request,
+    citizen_ref: str,
+    q: asyncio.Queue,
+) -> AsyncGenerator[str, None]:
+    """Generate citizen-level SSE events."""
+    yield _format_event("connected", {
+        "citizen_ref": citizen_ref,
+        "message": "Connected to notification stream",
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    })
+
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=25.0)
+                yield _format_event(event.get("type", "notification"), event)
+            except asyncio.TimeoutError:
+                yield _format_event("heartbeat", {"ts": datetime.datetime.utcnow().isoformat()})
+    except asyncio.CancelledError:
+        pass
+    finally:
+        bus.unsubscribe(citizen_ref, q)
+        logger.debug(f"Citizen SSE disconnected: {citizen_ref}")

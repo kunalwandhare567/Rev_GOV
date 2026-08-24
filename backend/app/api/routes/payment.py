@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.services.payment_service import PaymentService
 from app.data_layer.repositories.application_repo import ApplicationRepository
 from app.data_layer.repositories.citizen_repo import CitizenRepository
+from app.orchestration.state_machine.application_fsm import AppState
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payment", tags=["payment"])
@@ -35,11 +36,38 @@ class PaymentInitRequest(BaseModel):
 
 @router.post("/initiate")
 def initiate_payment(body: PaymentInitRequest, db: Session = Depends(get_db)):
-    """Initiate payment for an application."""
+    """Initiate payment for an application.
+
+    PHASE 9 RULE: Payment is ONLY allowed after government APPROVAL.
+    Applications not in PAYMENT_REQUIRED state will receive a 400 error.
+    This prevents premature payment before verification.
+    """
     app_repo = ApplicationRepository(db)
     app = app_repo.get_by_id(body.application_id)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    # ── Phase 9 Guard: Payment ONLY after approval ──
+    if app.status != AppState.PAYMENT_REQUIRED:
+        status_msg = {
+            AppState.INITIATED:                   "Application has not been started yet.",
+            AppState.INFORMATION_COLLECTION:      "Application is still collecting information.",
+            AppState.DOCUMENT_COLLECTION:         "Documents are still being uploaded.",
+            AppState.UNDER_REVIEW:                "Application is under government review. Payment will be enabled after approval.",
+            AppState.SUBMITTED_FOR_VERIFICATION:  "Application is submitted and awaiting government review.",
+            AppState.APPROVED:                    "Application is approved. Payment link will be sent shortly.",
+            AppState.PAYMENT_COMPLETED:           "Payment has already been completed.",
+            AppState.REJECTED:                    "This application has been rejected. Payment not applicable.",
+            AppState.COMPLETED:                   "Application is complete.",
+        }.get(app.status, f"Payment not available in current state: {app.status}")
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Payment is only allowed after government approval. "
+                f"Current status: {app.status}. {status_msg}"
+            ),
+        )
 
     if app.payment_status in ("PAID", "SUCCESS"):
         raise HTTPException(status_code=400, detail="Payment already completed")

@@ -66,6 +66,7 @@ def get_application_status(application_number: str, db: Session = Depends(get_db
 
     return {
         "application": {
+            "id":                 app.id,
             "application_number": app.application_number,
             "service_type":   app.service_id,   # service_id is the service type key
             "service_name":   app.service.name_en if app.service else None,
@@ -187,6 +188,26 @@ def update_application_status(
         metadata={"application_number": application_number, "new_status": status, "note": body.note},
     )
 
+    # Push chat message into citizen's conversation session
+    try:
+        from app.data_layer.repositories.session_repo import SessionRepository
+        session_repo = SessionRepository(db)
+        session = session_repo.load_session(app.citizen_ref)
+        if session:
+            status_msgs = {
+                "APPROVED": f"🎉 Great news! Your application **{application_number}** has been **APPROVED** by the officer! Your certificate will be issued shortly.",
+                "REJECTED": f"❌ Your application **{application_number}** was **REJECTED** by the officer. Reason: {body.note or 'Details do not match requirements'}",
+                "UNDER_REVIEW": f"📋 Your application **{application_number}** is now **UNDER REVIEW** by an officer.",
+                "ESCALATED": f"🆘 Your application **{application_number}** has been **ESCALATED** to a senior officer.",
+                "CERTIFICATE_READY": f"📜 Congratulations! Your certificate for application **{application_number}** is **READY** to download!",
+            }
+            msg_text = status_msgs.get(status)
+            if msg_text:
+                session_repo.add_message(session.id, "ASSISTANT", msg_text)
+                logger.info(f"Officer status update '{status}' saved to citizen session {session.id}")
+    except Exception as e:
+        logger.warning(f"Could not store officer status update message: {e}")
+
     # ── Phase 12: Broadcast SSE event to all connected clients ──
     try:
         from app.core.events import broadcast_status_change
@@ -277,3 +298,229 @@ def validate_eligibility_endpoint(
             "waiver_reason": fee.waiver_reason,
         },
     }
+
+
+@router.get("/{application_number}/readiness")
+def get_application_readiness(
+    application_number: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 7 — Compute and return Application Readiness Score.
+
+    Returns a 0-100 score based on 5 components:
+      1. Field Completeness     (30 pts)
+      2. Document Coverage      (25 pts)
+      3. OCR Validation         (20 pts)
+      4. Eligibility            (15 pts)
+      5. Cross-field Consistency (10 pts)
+
+    Frontend NEVER calculates this — always fetches from backend.
+    Score ≥ 75 and no blocking issues → can_submit = true.
+    """
+    from app.services.readiness_engine import ReadinessEngine
+    from app.rules_engine.engine import EligibilityChecker
+
+    repo = ApplicationRepository(db)
+    app = repo.get_by_number(application_number)
+    if not app:
+        raise HTTPException(status_code=404, detail=f"Application '{application_number}' not found")
+
+    service_id = getattr(app, "service_id", None)
+    filled_slots = dict(getattr(app, "submitted_data", None) or {})
+
+    # Get required slots and docs from YAML
+    try:
+        spec = ServiceSpecLoader.get(service_id)
+        required_slots = [s.name for s in spec.slots if s.required]
+        required_docs = list(spec.required_docs or [])
+    except Exception:
+        required_slots = []
+        required_docs = []
+
+    # Get uploaded documents
+    uploaded_docs = []
+    if app.documents:
+        uploaded_docs = [
+            getattr(d, "doc_type", getattr(d, "document_type", "")) or ""
+            for d in app.documents
+        ]
+
+    # Get OCR results
+    ocr_results = []
+    if app.documents:
+        for doc in app.documents:
+            ocr_status = getattr(doc, "ocr_status", None) or getattr(doc, "validation_status", "PENDING")
+            match_score = getattr(doc, "match_score", 0) or 0
+            ocr_results.append({
+                "doc_type": getattr(doc, "doc_type", "") or "",
+                "status": ocr_status,
+                "overall_match_score": float(match_score),
+            })
+
+    # Run eligibility check
+    eligibility_result = None
+    try:
+        spec = ServiceSpecLoader.get(service_id)
+        elig = EligibilityChecker.check(spec, filled_slots)
+        eligibility_result = {
+            "eligible": elig.valid,
+            "reason": "; ".join(elig.errors) if elig.errors else "Eligible",
+        }
+    except Exception:
+        pass
+
+    engine = ReadinessEngine()
+    result = engine.compute(
+        service_id=service_id or "",
+        filled_slots=filled_slots,
+        required_slots=required_slots,
+        required_docs=required_docs,
+        uploaded_docs=uploaded_docs,
+        ocr_results=ocr_results,
+        eligibility_result=eligibility_result,
+    )
+
+    return result.to_dict()
+
+
+@router.get("/{application_number}/evidence-graph")
+def get_evidence_graph(
+    application_number: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 7 (Gap Fix) — Evidence Graph.
+
+    Returns a structured JSON showing:
+    - Which document supports which declared field
+    - Which fields have conflicts between declared and OCR values
+    - Which fields are fully verified
+    - Which fields have missing evidence
+
+    This helps the admin and citizen understand validation confidence.
+    """
+    repo = ApplicationRepository(db)
+    app = repo.get_by_number(application_number)
+    if not app:
+        raise HTTPException(status_code=404, detail=f"Application '{application_number}' not found")
+
+    filled_slots = dict(getattr(app, "submitted_data", None) or {})
+    graph = {"fields": {}, "documents": [], "summary": {}}
+
+    # Initialize field nodes from declared data
+    for field_name, declared_value in filled_slots.items():
+        graph["fields"][field_name] = {
+            "declared_value": declared_value,
+            "doc_sources": [],      # which docs have this field
+            "verified": False,
+            "conflicting": False,
+            "missing_evidence": True,
+            "confidence": None,
+        }
+
+    # Populate from document OCR results
+    if app.documents:
+        for doc in app.documents:
+            doc_type = getattr(doc, "doc_type", "") or ""
+            ocr_status = getattr(doc, "ocr_status", "PENDING") or "PENDING"
+            match_result = getattr(doc, "match_result", None)
+
+            doc_node = {
+                "doc_type": doc_type,
+                "status": ocr_status,
+                "fields_extracted": [],
+                "fields_matched": [],
+                "fields_mismatched": [],
+            }
+
+            if match_result and isinstance(match_result, dict):
+                # Fields that matched
+                for f in match_result.get("matched_fields", []):
+                    fname = f.get("field", "")
+                    doc_node["fields_matched"].append(fname)
+                    if fname in graph["fields"]:
+                        graph["fields"][fname]["verified"] = True
+                        graph["fields"][fname]["missing_evidence"] = False
+                        graph["fields"][fname]["confidence"] = f.get("score", 100)
+                        graph["fields"][fname]["doc_sources"].append(doc_type)
+
+                # Fields that mismatched
+                for f in match_result.get("mismatched_fields", []):
+                    fname = f.get("field", "")
+                    doc_node["fields_mismatched"].append(fname)
+                    if fname in graph["fields"]:
+                        graph["fields"][fname]["conflicting"] = True
+                        graph["fields"][fname]["missing_evidence"] = False
+                        graph["fields"][fname]["confidence"] = f.get("score", 0)
+                        graph["fields"][fname]["doc_sources"].append(doc_type)
+
+            graph["documents"].append(doc_node)
+
+    # Summary
+    all_fields = graph["fields"]
+    total = len(all_fields)
+    verified = sum(1 for f in all_fields.values() if f["verified"])
+    conflicting = sum(1 for f in all_fields.values() if f["conflicting"])
+    missing_evidence = sum(1 for f in all_fields.values() if f["missing_evidence"])
+
+    graph["summary"] = {
+        "total_fields": total,
+        "verified_fields": verified,
+        "conflicting_fields": conflicting,
+        "missing_evidence_fields": missing_evidence,
+        "verification_coverage_pct": round((verified / total * 100) if total > 0 else 0, 1),
+    }
+
+    return graph
+
+
+@router.get("/current")
+def get_current_application(
+    citizen_identifier: str = Query(...),
+    service_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 12 — Application Deduplication.
+
+    Returns the most recent active (non-terminal) application for a citizen.
+    Used by the web portal to load the same application started on WhatsApp.
+    Prevents duplicate applications across channels.
+    """
+    repo = ApplicationRepository(db)
+    citizen_repo = CitizenRepository(db)
+
+    citizen = citizen_repo.get_by_identifier(citizen_identifier)
+    if not citizen:
+        return {"found": False, "application": None}
+
+    # Try service-specific lookup first
+    terminal_states = ["COMPLETED", "REJECTED"]
+    apps = repo.get_by_citizen_ref(citizen.citizen_ref)
+
+    if apps:
+        # Filter: non-terminal, optionally by service
+        active = [
+            a for a in apps
+            if a.status not in terminal_states
+            and (not service_id or getattr(a, "service_id", None) == service_id)
+        ]
+        # Sort: most recent first
+        active.sort(key=lambda a: getattr(a, "created_at", ""), reverse=True)
+
+        if active:
+            app = active[0]
+            return {
+                "found": True,
+                "application": {
+                    "id": str(app.id),
+                    "application_number": getattr(app, "application_number", None),
+                    "tracking_id": getattr(app, "tracking_id", None),
+                    "service_id": getattr(app, "service_id", None),
+                    "status": app.status,
+                    "created_at": str(getattr(app, "created_at", "")),
+                },
+            }
+
+    return {"found": False, "application": None}

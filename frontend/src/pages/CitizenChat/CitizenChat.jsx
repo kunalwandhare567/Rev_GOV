@@ -100,6 +100,10 @@ export default function CitizenChat() {
   const pendingDocTypeRef = useRef(null)
   const recognitionRef = useRef(null)
   const ivrIntervalRef = useRef(null)
+  const sseRef = useRef(null)    // Phase 13: SSE connection ref
+  
+  // Phase 13: Real-time notification from backend
+  const [sseNotification, setSseNotification] = useState(null) // { type, message, status }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -164,6 +168,59 @@ export default function CitizenChat() {
       if (ivrIntervalRef.current) clearInterval(ivrIntervalRef.current)
     }
   }, [ivrActive])
+
+  // Phase 13: SSE subscription for real-time status push
+  useEffect(() => {
+    if (!store.citizenIdentifier) return
+    const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+    const url = `${API_BASE}/api/v1/stream/citizen/${encodeURIComponent(store.citizenIdentifier)}/events`
+    
+    const es = new EventSource(url)
+    sseRef.current = es
+
+    const STATUS_MESSAGES = {
+      APPROVED:                 { type: 'success', msg: '🎉 Your application has been APPROVED! Payment step will begin shortly.' },
+      REJECTED:                 { type: 'error',   msg: '❌ Your application has been REJECTED. Please check the chat for reasons.' },
+      CLARIFICATION_REQUIRED:   { type: 'warning', msg: '📋 Clarification is required. Please check the chat and respond.' },
+      CERTIFICATE_READY:        { type: 'success', msg: '📜 Your certificate is ready! Download it from the portal.' },
+      COMPLETED:                { type: 'success', msg: '✅ Application completed. Certificate has been issued.' },
+    }
+
+    es.addEventListener('status_change', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        const newStatus = data.new_status
+        const cfg = STATUS_MESSAGES[newStatus]
+        if (cfg) {
+          setSseNotification({ ...cfg, status: newStatus, ts: Date.now() })
+          toast(cfg.msg, {
+            icon: cfg.type === 'success' ? '✅' : cfg.type === 'error' ? '❌' : '⚠️',
+            duration: 8000,
+          })
+          // Sync status in the store too
+          store.syncFromResponse({ application_status: newStatus })
+        }
+      } catch {/* ignore parse errors */}
+    })
+
+    es.addEventListener('notification', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        if (data.message) {
+          store.addMessage({ role: 'ASSISTANT', content: data.message, language: store.language })
+        }
+      } catch {/* ignore */}
+    })
+
+    es.onerror = () => {
+      // Browser auto-reconnects EventSource — no manual retry needed
+    }
+
+    return () => {
+      es.close()
+      sseRef.current = null
+    }
+  }, [store.citizenIdentifier])
 
   // Auto-speak new assistant messages
   useEffect(() => {
@@ -446,6 +503,14 @@ export default function CitizenChat() {
               <button className={styles.resumeBtn} onClick={handleResume}>{t(store.language,'chat.resumeBtn')}</button>
               <button className={styles.freshBtn} onClick={handleFresh}>{t(store.language,'chat.freshBtn')}</button>
             </div>
+          </div>
+        )}
+
+        {/* Phase 13: SSE Status Notification Banner */}
+        {sseNotification && (
+          <div className={styles.sseNotificationBanner} data-type={sseNotification.type}>
+            <span className={styles.sseNotificationMsg}>{sseNotification.msg}</span>
+            <button className={styles.sseNotificationClose} onClick={() => setSseNotification(null)}>✕</button>
           </div>
         )}
 

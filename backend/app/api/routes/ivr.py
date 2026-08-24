@@ -97,7 +97,16 @@ async def start_call(request: IVRStartRequest, db: Session = Depends(get_db)):
         app = app_repo.get_active_for_citizen(citizen.citizen_ref)
         if app:
             status_label = STATUS_LABEL.get(app.status, {}).get(request.language, app.status)
-            app_info = {"tracking_id": app.tracking_id, "status": status_label, "service": app.service.name_en}
+            # Phase 14 fix: use service_id safely (no relationship attribute)
+            service_name = (
+                app.service_id.replace("_", " ").replace("certificate", "Certificate").title()
+                if app.service_id else "Certificate"
+            )
+            app_info = {
+                "tracking_id": app.tracking_id,
+                "status": status_label,
+                "service": service_name,
+            }
 
     # Generate greeting
     if app_info:
@@ -195,8 +204,16 @@ def _process_ivr_input(user_input: str, session: IVRSession, lang: str,
         app = app_repo.get_active_for_citizen(session.citizen_ref)
         if app:
             status_label = STATUS_LABEL.get(app.status, {}).get(lang, app.status)
-            app_info = {"tracking_id": app.tracking_id, "status": status_label,
-                        "service": app.service.name_en}
+            # Phase 14 fix: use service_id safely
+            service_name = (
+                app.service_id.replace("_", " ").replace("certificate", "Certificate").title()
+                if app.service_id else "Certificate"
+            )
+            app_info = {
+                "tracking_id": app.tracking_id,
+                "status": status_label,
+                "service": service_name,
+            }
 
     key = user_input.strip()
 

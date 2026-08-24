@@ -103,6 +103,9 @@ class SessionRepository:
         modality: str = "TEXT",
     ) -> ConversationMessage:
         """Append a message to the conversation history."""
+        if isinstance(content, str):
+            content = content.encode("utf-8", "replace").decode("utf-8")
+
         msg = ConversationMessage(
             session_id=session_id,
             role=role,

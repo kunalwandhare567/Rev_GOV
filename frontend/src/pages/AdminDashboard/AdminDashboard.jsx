@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { RefreshCw, ExternalLink, TrendingUp, TrendingDown, Minus } from 'lucide-react'
@@ -33,7 +34,13 @@ function MetricCard({ label, value, trend, trendVal, color, sub }) {
   )
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
 export default function AdminDashboard() {
+  const queryClient = useQueryClient()
+  const [selectedApp, setSelectedApp] = useState(null)   // app being decided on
+  const [decisionModal, setDecisionModal] = useState(null) // { type, reason, notes }
+  const [decisionResult, setDecisionResult] = useState(null)
   const { data: overview, dataUpdatedAt } = useQuery({
     queryKey: ['dashboard-overview'],
     queryFn: dashboardApi.getOverview,
@@ -56,6 +63,40 @@ export default function AdminDashboard() {
   const byStatus   = overview?.by_status   || {}
   const byService  = overview?.by_service  || {}
   const byLanguage = overview?.by_language || {}
+
+  // Phase 8: Government Decision Mutation
+  const decideMutation = useMutation({
+    mutationFn: async ({ trackingId, decision, reason, notes }) => {
+      const token = localStorage.getItem('admin_token') || ''
+      const res = await fetch(`${API_BASE}/api/v1/mock-government/simulate-decision`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          tracking_id: trackingId,
+          decision,
+          reason: reason || null,
+          admin_notes: notes || null,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || `Decision failed (${res.status})`)
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setDecisionResult({ success: true, message: data.message, newStatus: data.new_status })
+      queryClient.invalidateQueries({ queryKey: ['recent-apps'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
+      setSelectedApp(null)
+    },
+    onError: (err) => {
+      setDecisionResult({ success: false, message: err.message })
+    },
+  })
 
   const statusPieData = Object.entries(byStatus).map(([k,v]) => ({
     name: k, value: v, fill: STATUS_CONFIG[k]?.dot || '#6b7280'
@@ -171,9 +212,23 @@ export default function AdminDashboard() {
                         {(app.anomaly_score||0).toFixed(2)}
                       </span>
                     </td>
-                    <td className={styles.td}>
-                      <Link to={`/admin/review/${app.application_number}`} className={styles.reviewBtn}>Review</Link>
-                    </td>
+                     <td className={styles.td}>
+                       <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+                         <Link to={`/admin/review/${app.application_number}`} className={styles.reviewBtn}>Review</Link>
+                         {app.status === 'UNDER_REVIEW' && (
+                           <button
+                             className={styles.decideBtn}
+                             onClick={() => {
+                               setSelectedApp(app)
+                               setDecisionModal({ decision: '', reason: '', notes: '' })
+                               setDecisionResult(null)
+                             }}
+                           >
+                             ⚖️ Decide
+                           </button>
+                         )}
+                       </div>
+                     </td>
                   </tr>
                 ))}
                 {recentApps.length === 0 && (
@@ -207,6 +262,110 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+
+      {/* ── Phase 8: Government Decision Modal ── */}
+      {selectedApp && decisionModal !== null && (
+        <div className={styles.modalOverlay} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>
+          <div className={styles.modal} onClick={e => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h3>⚖️ Government Decision</h3>
+              <button className={styles.modalClose} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>✕</button>
+            </div>
+
+            <div className={styles.modalBody}>
+              <div className={styles.modalAppInfo}>
+                <span className={styles.modalAppNum}>{selectedApp.application_number}</span>
+                <span className={styles.modalService}>{(selectedApp.service_type || '').replace('_certificate', '').toUpperCase()}</span>
+                <span className={styles.modalStatus}>Status: {selectedApp.status}</span>
+              </div>
+
+              {decisionResult ? (
+                <div className={decisionResult.success ? styles.decisionSuccess : styles.decisionError}>
+                  {decisionResult.success ? '✅ ' : '❌ '}{decisionResult.message}
+                  {decisionResult.newStatus && <div style={{marginTop:'8px',fontSize:'13px'}}>New Status: <strong>{decisionResult.newStatus}</strong></div>}
+                  <button className={styles.closeResultBtn} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>Close</button>
+                </div>
+              ) : (
+                <>
+                  <div className={styles.decisionOptions}>
+                    {[
+                      { key: 'APPROVE',                label: '✅ Approve',               color: '#10b981', bg: '#ecfdf5' },
+                      { key: 'REJECT',                 label: '❌ Reject',                color: '#ef4444', bg: '#fef2f2' },
+                      { key: 'CLARIFICATION_REQUIRED', label: '📝 Request Clarification', color: '#f59e0b', bg: '#fffbeb' },
+                    ].map(opt => (
+                      <button
+                        key={opt.key}
+                        className={styles.decisionOption}
+                        style={{
+                          borderColor: decisionModal.decision === opt.key ? opt.color : '#e5e7eb',
+                          background: decisionModal.decision === opt.key ? opt.bg : 'white',
+                          color: decisionModal.decision === opt.key ? opt.color : '#374151',
+                        }}
+                        onClick={() => setDecisionModal(m => ({ ...m, decision: opt.key }))}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {(decisionModal.decision === 'REJECT' || decisionModal.decision === 'CLARIFICATION_REQUIRED') && (
+                    <div className={styles.decisionReasonField}>
+                      <label className={styles.decisionLabel}>
+                        {decisionModal.decision === 'REJECT' ? 'Rejection Reason *' : 'Clarification Required *'}
+                      </label>
+                      <textarea
+                        className={styles.decisionTextarea}
+                        rows={3}
+                        placeholder={decisionModal.decision === 'REJECT'
+                          ? 'State the reason for rejection (visible to citizen)'
+                          : 'Describe what additional information is needed (visible to citizen)'}
+                        value={decisionModal.reason}
+                        onChange={e => setDecisionModal(m => ({ ...m, reason: e.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  <div className={styles.decisionReasonField}>
+                    <label className={styles.decisionLabel}>Admin Notes (internal, not shown to citizen)</label>
+                    <textarea
+                      className={styles.decisionTextarea}
+                      rows={2}
+                      placeholder="Internal notes for audit trail..."
+                      value={decisionModal.notes}
+                      onChange={e => setDecisionModal(m => ({ ...m, notes: e.target.value }))}
+                    />
+                  </div>
+
+                  <div className={styles.modalActions}>
+                    <button
+                      className={styles.cancelModalBtn}
+                      onClick={() => { setSelectedApp(null); setDecisionResult(null) }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className={styles.submitDecisionBtn}
+                      disabled={
+                        !decisionModal.decision ||
+                        ((decisionModal.decision === 'REJECT' || decisionModal.decision === 'CLARIFICATION_REQUIRED') && !decisionModal.reason.trim()) ||
+                        decideMutation.isPending
+                      }
+                      onClick={() => decideMutation.mutate({
+                        trackingId: selectedApp.tracking_id || selectedApp.application_number,
+                        decision: decisionModal.decision,
+                        reason: decisionModal.reason,
+                        notes: decisionModal.notes,
+                      })}
+                    >
+                      {decideMutation.isPending ? '⏳ Processing...' : 'Submit Decision'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

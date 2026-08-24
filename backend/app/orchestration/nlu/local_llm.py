@@ -1,208 +1,113 @@
 """
-Local NLU Pipeline
-Primary: Ollama local LLM (Phi-3 / Llama 3.1 8B)
-Fallback: Rule-based keyword intent matcher (always available)
-No citizen data is ever sent to cloud in either path.
-Architecture ref: Section 5.2.1, 6.1
+Phase 3 — NLU Module (v3.0)
+
+Replaces LocalNLU (Ollama + keyword fallback) with NLUService.
+NLUService delegates to the configured LLM provider (Gemini/Groq/OpenRouter).
+
+NO Ollama. NO phi3:mini. NO keyword-only fallback for conversation.
+If LLM fails → raise LLMUnavailableError → API returns 503.
+
+Preserved: LiteracyAdaptiveDialogue (deterministic, not LLM — kept as-is)
+Removed: LocalNLU, _analyze_with_keywords, _analyze_with_llm (Ollama), INTENT_CATALOGUE
 """
-import re
-import json
 import logging
-import httpx
-from typing import Dict, List, Optional, Tuple
-from app.core.config import settings
+from typing import Dict, Optional
+
+from app.llm.llm_service import LLMService
+from app.llm.exceptions import LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# Intent & Entity Schemas
-# ─────────────────────────────────────────────
 
-INTENT_CATALOGUE = {
-    "CERTIFICATE_REQUEST": [
-        "certificate", "praman patra", "praman-patra", "apply", "chahiye", "need", "want",
-        "income", "caste", "domicile", "obc", "ncl", "jati", "aay", "niwas",
-    ],
-    "STATUS_QUERY": [
-        "status", "kya hua", "update", "progress", "application number", "track", "where",
-        "kab milega", "kitne din", "how long",
-    ],
-    "PAYMENT": [
-        "pay", "payment", "fee", "amount", "upi", "challan", "paisa", "rupee",
-    ],
-    "HELP": [
-        "help", "madad", "sahayata", "guide", "what is", "kya hai", "how to", "kaise",
-    ],
-    "CANCEL": [
-        "cancel", "band karo", "stop", "exit", "quit", "nahi chahiye",
-    ],
-    "CORRECTION": [
-        "wrong", "galat", "change", "correct", "correction", "badlo", "sahi karo",
-    ],
-    "ESCALATION": [
-        "officer", "human", "person", "problem", "complaint", "issue", "not working",
-        "samajh nahi", "help me", "connect officer",
-    ],
-}
-
-# Certificate type keywords
-CERTIFICATE_TYPE_MAP = {
-    "income_certificate": ["income", "aay", "aay praman", "salary", "earning", "आय"],
-    "caste_certificate": ["caste", "jati", "जाति", "sc", "st", "obc certificate"],
-    "obc_ncl_certificate": ["obc ncl", "non creamy", "non-creamy", "ncl", "obc non"],
-    "domicile_certificate": ["domicile", "niwas", "निवास", "residence", "hometown", "local"],
-}
-
-
-class LocalNLU:
+class NLUService:
     """
-    NLU Pipeline: Ollama local LLM with keyword fallback.
-    Input: raw text (already transcribed, if voice)
-    Output: {intent, sub_intent, entities, pii_detected, literacy_level}
+    LLM-powered NLU service.
+
+    Calls the configured LLM provider (Gemini/Groq/OpenRouter) for:
+    - Intent detection (CERTIFICATE_REQUEST, STATUS_QUERY, CROSS_QUESTION, SLOT_ANSWER, etc.)
+    - Entity extraction (field_name → value)
+    - Language detection
+    - Literacy level estimation
+    - Cross-question detection (is citizen asking a digression question?)
+
+    NEVER uses keyword matching as the primary analysis method.
+    NEVER calls Ollama or phi3:mini.
+
+    On LLM failure: raises LLMUnavailableError → caller returns 503 to citizen.
     """
 
     def __init__(self):
-        self.ollama_url = settings.OLLAMA_BASE_URL
-        self.model = settings.OLLAMA_MODEL
-        self.fallback_enabled = settings.LLM_FALLBACK_ENABLED
-        self._ollama_available: Optional[bool] = None  # Lazily tested
+        self._llm = LLMService()
 
-    def analyze(self, text: str, language: str = "en", context: Optional[Dict] = None) -> Dict:
+    def analyze(
+        self,
+        text: str,
+        language: str = "en",
+        context: Optional[Dict] = None
+    ) -> Dict:
         """
-        Analyze utterance and return intent/entities.
-        Tries Ollama first, falls back to keyword matcher.
+        Analyze citizen utterance and return structured NLU result.
+
+        Returns dict with keys:
+          intent: str  (CERTIFICATE_REQUEST | STATUS_QUERY | PAYMENT | HELP |
+                        CANCEL | CORRECTION | CROSS_QUESTION | SLOT_ANSWER | UNKNOWN)
+          service_type: str | None
+          entities: dict[str, str]  — extracted field values
+          pii_detected: list[str]   — field names containing PII
+          literacy_level: str       — LOW | MEDIUM | HIGH
+          language: str             — detected ISO 639-1 code
+          is_cross_question: bool   — True if citizen is asking a digression
+          cross_question_target: str | None — field name they're asking about
+
+        Raises:
+          LLMUnavailableError — when LLM provider fails. NEVER falls back to keywords.
         """
-        text_clean = text.strip()
+        result = self._llm.extract_nlu(text, language=language, context=context)
 
-        if settings.LLM_PROVIDER == "local" and self._is_ollama_available():
-            try:
-                return self._analyze_with_llm(text_clean, language, context)
-            except Exception as e:
-                logger.warning(f"Ollama analysis failed, using fallback: {e}")
+        # Normalize: ensure all expected keys are present and correctly typed
+        result.setdefault("intent", "UNKNOWN")
+        result.setdefault("service_type", None)
+        result.setdefault("pii_detected", [])
+        result.setdefault("literacy_level", "MEDIUM")
+        result.setdefault("language", language)
+        result.setdefault("is_cross_question", False)
+        result.setdefault("cross_question_target", None)
 
-        return self._analyze_with_keywords(text_clean, language)
+        # Ensure entities is strictly a dict
+        entities = result.get("entities")
+        if isinstance(entities, list):
+            new_entities = {}
+            for item in entities:
+                if isinstance(item, dict):
+                    k = item.get("name") or item.get("entity") or item.get("slot") or item.get("field")
+                    v = item.get("value")
+                    if k and v:
+                        new_entities[str(k)] = str(v)
+                elif isinstance(item, str):
+                    new_entities[item] = item
+            result["entities"] = new_entities
+        elif not isinstance(entities, dict):
+            result["entities"] = {}
 
-    _ollama_available_cached: Optional[bool] = None
-
-    def _is_ollama_available(self) -> bool:
-        if LocalNLU._ollama_available_cached is not None:
-            return LocalNLU._ollama_available_cached
-        try:
-            resp = httpx.get(f"{self.ollama_url}/api/tags", timeout=0.2)
-            LocalNLU._ollama_available_cached = resp.status_code == 200
-        except Exception:
-            LocalNLU._ollama_available_cached = False
-        return LocalNLU._ollama_available_cached
-
-
-    def _analyze_with_llm(self, text: str, language: str, context: Optional[Dict]) -> Dict:
-        """Call Ollama for structured intent/entity extraction."""
-        system_prompt = """You are an NLU system for an Indian government certificate services platform.
-Analyze the user utterance and return ONLY a JSON object with these exact fields:
-{
-  "intent": "CERTIFICATE_REQUEST|STATUS_QUERY|PAYMENT|HELP|CANCEL|CORRECTION|ESCALATION|UNKNOWN",
-  "service_type": "income_certificate|caste_certificate|obc_ncl_certificate|domicile_certificate|null",
-  "entities": {field_name: value},
-  "pii_detected": [list of PII field names found],
-  "literacy_level": "LOW|MEDIUM|HIGH",
-  "language": "detected ISO language code"
-}
-Rules:
-- Extract ONLY explicitly stated entities (do not infer)
-- PII: names, aadhaar, dates of birth, phone numbers
-- Literacy: LOW=one-word answers/unclear, MEDIUM=full sentences, HIGH=formal language
-Return ONLY the JSON, no explanation."""
-
-        user_prompt = f"Utterance: {text}\nContext: {json.dumps(context or {})}"
-
-        response = httpx.post(
-            f"{self.ollama_url}/api/generate",
-            json={
-                "model": self.model,
-                "prompt": f"{system_prompt}\n\n{user_prompt}",
-                "stream": False,
-                "format": "json",
-            },
-            timeout=15.0,
+        logger.debug(
+            f"NLU [{result['language']}] intent={result['intent']} "
+            f"service={result.get('service_type')} "
+            f"entities={list(result['entities'].keys())} "
+            f"cross_q={result['is_cross_question']}"
         )
 
-        if response.status_code == 200:
-            result_text = response.json().get("response", "{}")
-            try:
-                return json.loads(result_text)
-            except json.JSONDecodeError:
-                logger.warning("LLM returned non-JSON, using keyword fallback")
-                return self._analyze_with_keywords(text, language)
-        else:
-            raise RuntimeError(f"Ollama API error: {response.status_code}")
+        return result
 
-    def _analyze_with_keywords(self, text: str, language: str) -> Dict:
-        """Rule-based keyword intent matcher — always available fallback."""
-        text_lower = text.lower()
 
-        # Detect intent
-        intent = "UNKNOWN"
-        for candidate_intent, keywords in INTENT_CATALOGUE.items():
-            if any(kw in text_lower for kw in keywords):
-                intent = candidate_intent
-                break
-
-        # Detect service type
-        service_type = None
-        for svc_id, keywords in CERTIFICATE_TYPE_MAP.items():
-            if any(kw in text_lower for kw in keywords):
-                service_type = svc_id
-                break
-
-        # Simple entity extraction (numbers, dates)
-        entities = {}
-        # Extract 12-digit Aadhaar
-        aadhaar_match = re.search(r"\b\d{12}\b", text)
-        if aadhaar_match:
-            entities["aadhaar_number"] = aadhaar_match.group()
-
-        # Extract date patterns DD-MM-YYYY or DD/MM/YYYY
-        date_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
-        if date_match:
-            d, m, y = date_match.groups()
-            entities["applicant_dob"] = f"{d.zfill(2)}-{m.zfill(2)}-{y}"
-
-        # Extract income (number followed by rupee context)
-        income_match = re.search(r"\b(\d[\d,]+)\b", text)
-        if income_match and intent == "CERTIFICATE_REQUEST" and "income" in text_lower:
-            entities["annual_income"] = income_match.group().replace(",", "")
-
-        # PII detection (basic)
-        pii_detected = []
-        if aadhaar_match:
-            pii_detected.append("aadhaar_number")
-        if date_match:
-            pii_detected.append("applicant_dob")
-
-        # Literacy level estimation
-        word_count = len(text.split())
-        if word_count <= 2:
-            literacy = "LOW"
-        elif word_count <= 10:
-            literacy = "MEDIUM"
-        else:
-            literacy = "HIGH"
-
-        return {
-            "intent": intent,
-            "service_type": service_type,
-            "entities": entities,
-            "pii_detected": pii_detected,
-            "literacy_level": literacy,
-            "language": language,
-            "method": "keyword_fallback",
-        }
-
+# ─────────────────────────────────────────────
+# Literacy Adaptive Dialogue
+# Kept as-is — deterministic, no LLM required.
+# ─────────────────────────────────────────────
 
 class LiteracyAdaptiveDialogue:
     """
     Adjusts response style based on detected literacy level.
-    Architecture ref: Section 5.2.4
+    Deterministic — no LLM calls.
     """
 
     ADAPTATION_RULES = {
@@ -234,13 +139,36 @@ class LiteracyAdaptiveDialogue:
         if len(words) > rules["max_words_per_prompt"]:
             prompt = " ".join(words[:rules["max_words_per_prompt"]]) + "..."
         if rules.get("repeat_confirmation"):
-            prompt += " (Please say YES or NO)"
+            if language == "hi":
+                prompt += " (हाँ या नहीं बताएं)"
+            elif language == "mr":
+                prompt += " (होय किंवा नाही सांगा)"
+            else:
+                prompt += " (Please say YES or NO)"
         return prompt
 
     @classmethod
     def get_slot_prompt(cls, slot_spec, language: str, literacy_level: str) -> str:
-        """Get appropriate prompt for a slot in the correct language."""
-        prompts = slot_spec.prompt if isinstance(slot_spec, dict) else getattr(slot_spec, "prompt", {})
-        # Try exact language, then "en" as fallback
-        prompt = prompts.get(language, prompts.get("en", f"Please provide: {slot_spec.get('name', 'value') if isinstance(slot_spec, dict) else slot_spec.name}"))
+        """Get appropriate prompt for a slot in the correct language (YAML fallback)."""
+        prompts = (
+            slot_spec.prompt
+            if hasattr(slot_spec, "prompt")
+            else slot_spec.get("prompt", {})
+        )
+        if isinstance(prompts, dict):
+            prompt = prompts.get(language, prompts.get("en", ""))
+        else:
+            prompt = str(prompts)
+        slot_name = (
+            slot_spec.name if hasattr(slot_spec, "name") else slot_spec.get("name", "value")
+        )
+        if not prompt:
+            prompt = f"Please provide your {slot_name.replace('_', ' ')}:"
         return cls.adapt_prompt(prompt, literacy_level, language)
+
+
+# ─────────────────────────────────────────────
+# Backward-compatible alias
+# Any code importing LocalNLU will get NLUService.
+# ─────────────────────────────────────────────
+LocalNLU = NLUService

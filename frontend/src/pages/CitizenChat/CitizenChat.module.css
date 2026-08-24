@@ -1634,3 +1634,60 @@
     display: none;
   }
 }
+
+/* ── Phase 13: SSE Status Notification Banner ── */
+.sseNotificationBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+
+.sseNotificationBanner[data-type="success"] {
+  background: #ecfdf5;
+  color: #065f46;
+  border-color: #6ee7b7;
+}
+
+.sseNotificationBanner[data-type="error"] {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.sseNotificationBanner[data-type="warning"] {
+  background: #fffbeb;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.sseNotificationMsg {
+  flex: 1;
+}
+
+.sseNotificationClose {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.sseNotificationClose:hover {
+  opacity: 1;
+  background: rgba(0,0,0,0.08);
+}

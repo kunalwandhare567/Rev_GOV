@@ -11,7 +11,7 @@ from app.core.config import settings
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False},
-    echo=settings.DEBUG,
+    echo=False,  # Set to False to prevent cp1252 console logging crashes on unicode parameters
 )
 
 # Enable WAL mode and foreign keys on each connection

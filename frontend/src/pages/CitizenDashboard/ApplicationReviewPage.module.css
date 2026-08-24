@@ -1,0 +1,517 @@
+/* ApplicationReviewPage.module.css — Phase 11 */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+.container {
+  font-family: 'Inter', sans-serif;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px 60px;
+  color: #1f2937;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.serviceTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  flex: 1;
+}
+
+.trackingBadge {
+  font-size: 13px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 4px 12px;
+  color: #374151;
+}
+
+.readinessBadge {
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  border-radius: 8px;
+  padding: 4px 14px;
+}
+
+/* ── Tabs ── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid #e5e7eb;
+  margin-bottom: 28px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  padding: 10px 18px;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  font-size: 14px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab:hover { color: #374151; }
+
+.tabActive {
+  color: #4f46e5;
+  border-bottom-color: #4f46e5;
+  font-weight: 600;
+}
+
+/* ── Sections ── */
+.section { animation: fadeIn 0.25s ease; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+
+.sectionTitle {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: #111827;
+}
+
+.sectionSubtitle {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0 0 20px;
+}
+
+/* ── Field Grid ── */
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.fieldCard {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: box-shadow 0.2s;
+}
+
+.fieldCard:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+
+.fieldLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.fieldValue {
+  font-size: 15px;
+  font-weight: 500;
+  color: #111827;
+  word-break: break-word;
+}
+
+.missingValue {
+  color: #d1d5db;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.fieldVerification {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.verified   { color: #10b981; font-weight: 500; }
+.conflict   { color: #f59e0b; font-weight: 500; }
+.noEvidence { color: #9ca3af; }
+
+/* ── Nav Buttons ── */
+.navBtns {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.prevBtn {
+  padding: 10px 20px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: white;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.prevBtn:hover { background: #f9fafb; }
+
+.nextBtn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+
+.nextBtn:hover { opacity: 0.9; transform: translateY(-1px); }
+
+/* ── Document Cards ── */
+.docCard {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.docHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.docType { font-weight: 600; font-size: 15px; color: #111827; }
+.docStatus { font-size: 12px; font-weight: 600; }
+
+.matchBar { margin-bottom: 14px; }
+.matchBarLabel { font-size: 13px; color: #374151; margin-bottom: 4px; }
+.matchBarTrack {
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.matchBarFill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+.fieldMatches, .fieldMismatches { margin-top: 14px; }
+
+.matchGroupTitle   { font-size: 12px; font-weight: 600; color: #10b981; margin-bottom: 8px; }
+.mismatchGroupTitle { font-size: 12px; font-weight: 600; color: #f59e0b; margin-bottom: 8px; }
+
+.matchedField {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.matchScore { color: #10b981; font-weight: 600; }
+
+.mismatchCard {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.mismatchFieldName { font-weight: 600; font-size: 13px; color: #92400e; margin-bottom: 8px; }
+
+.mismatchValues { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+
+.mismatchDeclared, .mismatchDoc {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.mismatchLabel { font-weight: 600; color: #6b7280; min-width: 80px; }
+
+.mismatchScore { font-size: 12px; color: #ef4444; font-weight: 600; }
+
+.mismatchResolution { margin-top: 8px; }
+.mismatchResLabel { font-size: 11px; color: #6b7280; display: block; margin-bottom: 6px; }
+
+.mismatchBtns { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.mismatchBtn {
+  padding: 6px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: #374151;
+}
+
+.mismatchBtn:hover { background: #f9fafb; }
+
+.mismatchBtnActive {
+  background: #ecfdf5;
+  border-color: #10b981;
+  color: #065f46;
+  font-weight: 600;
+}
+
+.mismatchBtnActiveDoc {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.noDocuments {
+  text-align: center;
+  color: #9ca3af;
+  padding: 40px;
+  background: #f9fafb;
+  border-radius: 12px;
+  font-size: 15px;
+}
+
+/* ── Readiness Panel ── */
+.readinessPanel {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 22px;
+  margin-bottom: 24px;
+}
+
+.readinessHeader {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.readinessTitle { font-weight: 700; font-size: 16px; flex: 1; }
+
+.readinessScore {
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.readinessStatus { font-size: 14px; color: #374151; }
+
+.readinessComponents { display: flex; flex-direction: column; gap: 10px; }
+
+.readinessComp {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.readinessCompName {
+  font-size: 13px;
+  color: #374151;
+  min-width: 180px;
+}
+
+.readinessCompBar {
+  flex: 1;
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.readinessCompFill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+.readinessCompScore {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  min-width: 45px;
+  text-align: right;
+}
+
+.blockingIssues {
+  margin-top: 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.blockingTitle { font-size: 13px; font-weight: 600; color: #991b1b; margin-bottom: 6px; }
+.blockingIssue { font-size: 13px; color: #7f1d1d; padding: 2px 0; }
+
+.warnings {
+  margin-top: 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.warningsTitle { font-size: 13px; font-weight: 600; color: #92400e; margin-bottom: 6px; }
+.warning { font-size: 13px; color: #78350f; padding: 2px 0; }
+
+/* ── Summary Panel ── */
+.summaryPanel {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
+  padding: 18px 22px;
+  margin-bottom: 20px;
+}
+
+.summaryTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0369a1;
+  margin: 0 0 14px;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.summaryField {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.summaryKey { font-weight: 600; color: #0369a1; min-width: 140px; }
+.summaryValue { color: #1e3a5f; }
+
+/* ── Consent ── */
+.consentPanel {
+  background: #fafafa;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 18px 22px;
+  margin-bottom: 20px;
+}
+
+.consentLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.6;
+}
+
+.consentCheckbox {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  accent-color: #4f46e5;
+  cursor: pointer;
+}
+
+/* ── Submit Area ── */
+.submitArea {
+  text-align: center;
+  margin: 24px 0;
+}
+
+.submitBtn {
+  padding: 14px 40px;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  color: white;
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);
+}
+
+.submitBtn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.5);
+}
+
+.submitBtn:disabled {
+  background: #d1d5db;
+  color: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.submitHint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 8px;
+}
+
+/* ── Error / Success ── */
+.errorBox {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #991b1b;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.errorContainer, .loadingContainer, .successContainer {
+  text-align: center;
+  padding: 60px 24px;
+}
+
+.errorIcon, .successIcon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.retryBtn {
+  padding: 10px 24px;
+  background: #4f46e5;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+.trackingId { font-size: 18px; margin: 12px 0; color: #374151; }

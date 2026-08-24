@@ -4,14 +4,17 @@ Entry point for the Multilingual Voice-First Revenue Services Platform backend.
 """
 import os
 import sys
+import uuid
 import logging
 import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Force UTF-8 on Windows to avoid cp1252 emoji encoding errors
 if hasattr(sys.stdout, "reconfigure"):
@@ -22,6 +25,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.routes import conversation, applications, dashboard, data_guard, auth
+from app.llm.exceptions import LLMUnavailableError
 from app.api.routes import whatsapp, ivr, tracking, documents, payment, stream
 from app.core.security import SecurityMiddleware
 
@@ -66,7 +70,13 @@ async def lifespan(app: FastAPI):
         "data/ocr_cache",          # OCR result cache
     ]:
         os.makedirs(path, exist_ok=True)
-    logger.info("Storage directories ready")
+    # Initialize & verify OCR Service / Tesseract OCR
+    from app.services.ocr_service import OCRService
+    ocr_service_init = OCRService()
+    if ocr_service_init.is_tesseract_available:
+        logger.info(f"✅ OCR Engine ready (Tesseract OCR: {ocr_service_init.tesseract_path})")
+    else:
+        logger.info(f"ℹ️ OCR Engine ready (Vision / Fallback OCR active)")
 
     # Seed database if empty
     _seed_database()
@@ -99,14 +109,7 @@ def _seed_database():
             ))
             logger.info(f"✅ Admin user created: {settings.ADMIN_USERNAME}")
 
-        # Seed officer user
-        if not db.query(User).filter(User.username == settings.OFFICER_USERNAME).first():
-            db.add(User(
-                username=settings.OFFICER_USERNAME,
-                hashed_password=pwd_ctx.hash(settings.OFFICER_PASSWORD),
-                role="OFFICER",
-            ))
-            logger.info(f"✅ Officer user created: {settings.OFFICER_USERNAME}")
+        # Officer persona removed — Admin absorbs all review functions
 
         # Seed service catalogue from YAML specs
         specs = ServiceSpecLoader.load_all()
@@ -135,6 +138,34 @@ def _seed_database():
         db.close()
 
 
+import json
+from typing import Any
+
+class SafeJSONResponse(JSONResponse):
+    """
+    JSONResponse subclass that sanitizes UTF-16 surrogates before UTF-8 encoding
+    to prevent UnicodeEncodeError crashes on Windows / LLM responses.
+    """
+    def render(self, content: Any) -> bytes:
+        def _sanitize(obj):
+            if isinstance(obj, str):
+                return obj.encode("utf-8", "replace").decode("utf-8", "replace")
+            elif isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            return obj
+
+        sanitized_content = _sanitize(content)
+        return json.dumps(
+            sanitized_content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8", "replace")
+
+
 # ─────────────────────────────────────────────
 # FastAPI App
 # ─────────────────────────────────────────────
@@ -149,6 +180,7 @@ app = FastAPI(
     ),
     docs_url="/docs",
     redoc_url="/redoc",
+    default_response_class=SafeJSONResponse,
     lifespan=lifespan,
 )
 
@@ -158,6 +190,7 @@ app.add_middleware(SecurityMiddleware)         # ← Phase 14: rate limiting + s
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -182,6 +215,13 @@ app.include_router(documents.router, prefix=PREFIX)  # Documents + fields + reso
 # ── Phase 11-12 Routes ──
 app.include_router(payment.router, prefix=PREFIX)    # Payment initiate + receipt verify
 app.include_router(stream.router, prefix=PREFIX)     # SSE real-time events
+
+# ── Phase 8: Mock Government Adapter ──
+try:
+    from app.api.routes import mock_government
+    app.include_router(mock_government.router, prefix=PREFIX)
+except ImportError:
+    pass  # Created in Phase 8
 
 # ── Static Files Mount ──
 app.mount("/data", StaticFiles(directory="data"), name="data")
@@ -211,15 +251,109 @@ def health_check():
     }
 
 
-# ── Global Error Handler ──
+# ── Global Error Handlers ──
+
+def _cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin") or "*"
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """
+    Phase 15: Consistent JSON error shape for all HTTP errors (404, 400, 403, etc.).
+    Adds request_id for traceability.
+    """
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
+    return SafeJSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "status_code": exc.status_code,
+            "request_id": request_id,
+        },
+        headers=_cors_headers(request),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Phase 15: Return readable validation errors with field paths.
+    Prevents confusing 422 payloads being silently swallowed by frontend.
+    """
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
+    errors = []
+    for err in exc.errors():
+        field = " -> ".join(str(loc) for loc in err["loc"])
+        errors.append({"field": field, "message": err["msg"], "type": err["type"]})
+    logger.warning(f"Validation error [{request_id}]: {errors}")
+    return SafeJSONResponse(
+        status_code=422,
+        content={
+            "detail": "Request validation failed",
+            "errors": errors,
+            "request_id": request_id,
+        },
+        headers=_cors_headers(request),
+    )
+
+
+@app.exception_handler(LLMUnavailableError)
+async def llm_unavailable_handler(request: Request, exc):
+    """Return 503 when LLM provider is unreachable. NEVER fall back silently."""
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
+    logger.warning(f"LLM unavailable [{request_id}]: {exc}")
+    return SafeJSONResponse(
+        status_code=503,
+        content={
+            "detail": "AI service is temporarily unavailable. Please try again in a moment.",
+            "request_id": request_id,
+        },
+        headers=_cors_headers(request),
+    )
+
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    logger.error(f"Unhandled error: {exc}", exc_info=True)
-    return JSONResponse(
+async def global_exception_handler(request: Request, exc):
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
+    logger.error(f"Unhandled error [{request_id}]: {exc}", exc_info=True)
+    return SafeJSONResponse(
         status_code=500,
-        content={"detail": "Internal server error", "type": type(exc).__name__},
+        content={
+            "detail": f"Internal server error: {str(exc)}",
+            "type": type(exc).__name__,
+            "request_id": request_id,
+        },
+        headers=_cors_headers(request),
     )
+
+
+# ── LLM Health Check ──
+@app.get("/api/v1/health/llm", tags=["health"])
+def llm_health():
+    """Check LLM provider health. Returns provider name and model. Does NOT expose API key."""
+    try:
+        from app.llm.provider_factory import get_provider
+        p = get_provider()
+        return {
+            "status": "ok",
+            "provider": p.provider_name,
+            "model": p.model_name,
+            "reachable": True,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "provider": settings.LLM_PROVIDER,
+            "reachable": False,
+            "error": str(e),
+        }
 
 
 if __name__ == "__main__":

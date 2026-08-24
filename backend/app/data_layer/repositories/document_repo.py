@@ -101,3 +101,24 @@ class DocumentRepository:
             return True
         unresolved = [f for f in (doc.mismatch_fields or []) if f not in (doc.mismatch_resolutions or {})]
         return len(unresolved) == 0
+
+    def update_document_verification(
+        self, doc_id: str, status: str, mismatch_fields: list
+    ) -> Document | None:
+        """Update verification status and mismatch fields after matching."""
+        doc = self.get(doc_id)
+        if doc:
+            doc.verification_status = status
+            doc.mismatch_fields = mismatch_fields or []
+            doc.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+        return doc
+
+    def update_doc_type(self, doc_id: str, doc_type: str) -> Document | None:
+        """Update the detected document type (auto-detected by OCR)."""
+        doc = self.get(doc_id)
+        if doc:
+            doc.doc_type = doc_type
+            doc.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+        return doc
