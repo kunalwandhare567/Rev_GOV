@@ -256,8 +256,9 @@ class Document(Base):
     # OCR results
     raw_ocr_text = Column(Text, nullable=True)             # Raw Tesseract OCR output
     raw_extracted_fields = Column(JSON, default=dict)      # Deterministic regex extracted fields
-    normalized_fields = Column(JSON, default=dict)         # OpenRouter normalized fields
+    normalized_fields = Column(JSON, default=dict)         # OpenRouter / Deterministic normalized fields
     normalization_status = Column(String(32), default="PENDING") # PENDING | AI_NORMALIZED | DETERMINISTIC
+    normalization_provider = Column(String(32), default="LOCAL") # LOCAL | OPENROUTER
     normalization_confidence = Column(JSON, default=dict)  # {"applicant_name": 0.96}
 
     extracted_fields = Column(JSON, default=dict)          # Active / normalized OCR output

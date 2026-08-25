@@ -305,6 +305,7 @@ async def upload_document(
         normalized_fields=ocr_res.normalized_fields,
         normalization_confidence=ocr_res.confidence_breakdown,
         normalization_status=ocr_res.normalization_metadata.get("status") if ocr_res.normalization_metadata else None,
+        normalization_provider=ocr_res.normalization_metadata.get("provider") if ocr_res.normalization_metadata else "LOCAL",
     )
 
     # Return synced application documents and info
@@ -333,6 +334,8 @@ async def upload_document(
         "ocr_provider": ocr_provider,
         "ocr_confidence": ocr_confidence,
         "ocr_fields_extracted": list(extracted_fields.keys()),
+        "normalized_fields": ocr_res.normalized_fields,
+        "overall_match_score": result.get("overall_score", 100.0),
         **result
     }
 
@@ -619,6 +622,7 @@ def _format_document_dict(d) -> dict:
         "normalized_fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
         "normalization_confidence": getattr(d, "normalization_confidence", {}) or {},
         "normalization_status": getattr(d, "normalization_status", "DETERMINISTIC"),
+        "normalization_provider": getattr(d, "normalization_provider", "LOCAL") or "LOCAL",
         "matching": {
             "score": d.overall_match_score or 0.0,
             "status": d.verification_status,

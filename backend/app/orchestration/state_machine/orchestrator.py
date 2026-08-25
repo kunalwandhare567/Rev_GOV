@@ -31,7 +31,7 @@ STATE_GRAPH = {
     "CONSENT": ["INTENT_DETECTION", "SLOT_FILLING", "END"],
     "INTENT_DETECTION": ["SLOT_FILLING", "STATUS_QUERY", "ESCALATION"],
     "SLOT_FILLING": ["SLOT_FILLING", "DOCUMENT_CAPTURE", "VALIDATION"],
-    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING", "VALIDATION", "PAYMENT", "CORRECTION_PROMPT", "PENDING_OFFICER_PRE_APPROVAL"],
+    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING", "VALIDATION", "PAYMENT", "CORRECTION_PROMPT", "FINAL_REVIEW"],
     "DOCUMENT_VERIFY": ["VALIDATION", "CORRECTION_PROMPT"],
     "VALIDATION": ["PAYMENT", "CORRECTION_PROMPT", "ESCALATION"],
     "CORRECTION_PROMPT": ["SLOT_FILLING", "DOCUMENT_CAPTURE"],
@@ -547,14 +547,25 @@ class ConversationOrchestrator:
         all_slots = [s.name for s in spec.slots if s.required]
         session.missing_slots = all_slots
         session.filled_slots = {}
+        session.validation_errors = []
 
-        # Pre-fill any entities NLU already found
+        # Pre-fill any entities NLU already found ONLY IF VALID
         entities = nlu_result.get("entities", {})
+        slot_map = {s.name: s for s in spec.slots}
         for key, value in entities.items():
-            if key in all_slots:
-                session.filled_slots[key] = value
-                if key in session.missing_slots:
-                    session.missing_slots = [s for s in session.missing_slots if s != key]
+            if key in slot_map and key in all_slots:
+                sl = slot_map[key]
+                val_str = str(value).strip()
+                if val_str.lower() in ("yes", "no", "ok", "okay", "haan", "ha", "nahi", "agree", "disagree"):
+                    continue
+                valid, _ = FieldValidator.validate_slot(sl, val_str, session.language)
+                if valid:
+                    session.filled_slots[key] = val_str
+                    if key in session.missing_slots:
+                        session.missing_slots = [s for s in session.missing_slots if s != key]
+                    self.app_repo.save_field(
+                        session.application_id, key, val_str, sl.classification
+                    )
 
         fee_result = FeeCalculator.calculate(spec, session.filled_slots)
         service_name = spec.name.get(session.language, spec.name.get("en", service_type)) if isinstance(spec.name, dict) else str(spec.name)
@@ -632,41 +643,42 @@ class ConversationOrchestrator:
         )
 
         slot_map = {s.name: s for s in spec.slots}
-        next_missing = nq_result.slot_name  # None if all filled
+        target_slot = session.pending_field if (session.pending_field and session.pending_field in slot_map) else nq_result.slot_name
 
-        # Try to fill the next missing slot from the utterance
+        # Try to fill the target slot from entities or utterance
         filled_something = False
 
-        if next_missing and next_missing in slot_map:
-            slot = slot_map[next_missing]
-            candidate_value = entities.get(next_missing) or raw_text.strip()
+        if target_slot and target_slot in slot_map:
+            slot = slot_map[target_slot]
+            candidate_value = entities.get(target_slot) or raw_text.strip()
 
             # ── Auto-correct field value before validation ──
             corrected_value, was_corrected, correction_note = self.field_corrector.correct(
-                next_missing, candidate_value, session.language
+                target_slot, candidate_value, session.language
             )
             if was_corrected:
-                logger.info(f"FieldCorrector [{next_missing}]: {candidate_value!r} -> {corrected_value!r} ({correction_note})")
+                logger.info(f"FieldCorrector [{target_slot}]: {candidate_value!r} -> {corrected_value!r} ({correction_note})")
                 candidate_value = corrected_value
 
             valid, error = FieldValidator.validate_slot(slot, candidate_value, session.language)
             if valid:
-                session.filled_slots = {**session.filled_slots, next_missing: candidate_value}
-                if next_missing in (session.missing_slots or []):
-                    session.missing_slots = [s for s in session.missing_slots if s != next_missing]
+                session.filled_slots = {**session.filled_slots, target_slot: candidate_value}
+                if target_slot in (session.missing_slots or []):
+                    session.missing_slots = [s for s in session.missing_slots if s != target_slot]
+                session.validation_errors = [e for e in (session.validation_errors or []) if target_slot not in e]
                 filled_something = True
 
                 # Save to DB
                 self.app_repo.save_field(
-                    session.application_id, next_missing, candidate_value, slot.classification
+                    session.application_id, target_slot, candidate_value, slot.classification
                 )
             else:
                 error_msg = self._multilang_msg(session.language, {
-                    "en": f"\u26a0\ufe0f {error} Please try again.",
-                    "hi": f"\u26a0\ufe0f {error} \u0915\u0943\u092a\u092f\u093e \u092a\u0941\u0928\u0903 \u092a\u094d\u0930\u092f\u093e\u0938 \u0915\u0930\u0947\u0902\u0964",
+                    "en": f"⚠️ {error} Please try again.",
+                    "hi": f"⚠️ {error} कृपया पुनः प्रयास करें।",
                 })
                 session.validation_errors = (session.validation_errors or []) + [error]
-                return error_msg, "SLOT_FILLING", {"field": next_missing, "error": error}
+                return error_msg, "SLOT_FILLING", {"field": target_slot, "error": error}
 
         # Also fill from NLU entities for other slots
         for slot_name, value in entities.items():
@@ -759,12 +771,21 @@ class ConversationOrchestrator:
         should_advance = (not missing_doc_types) or any(w in raw_text for w in advance_keywords)
 
         if should_advance:
-            # Transition app FSM to PENDING_OFFICER_PRE_APPROVAL
             try:
                 from app.orchestration.state_machine.application_fsm import AppState
-                self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
+                from app.services.readiness_engine import ReadinessEngine
+                readiness_engine = ReadinessEngine()
+                readiness = readiness_engine.compute_readiness(
+                    application=app,
+                    spec=spec,
+                    filled_slots=session.filled_slots or {},
+                    documents=app.documents or [],
+                    anomaly_score=session.anomaly_score or 0.0,
+                )
+                target_state = AppState.READY_FOR_REVIEW if (readiness and readiness.can_submit) else AppState.VALIDATION_COMPLETED
+                self.app_repo.update_status(session.application_id, target_state)
             except Exception as e:
-                logger.warning(f"Could not update app status to PENDING_OFFICER_PRE_APPROVAL: {e}")
+                logger.warning(f"Could not update app status on advance: {e}")
 
             msg = self._multilang_msg(session.language, {
                 "en": (
@@ -1209,6 +1230,7 @@ class ConversationOrchestrator:
         normalized_fields: Optional[Dict] = None,
         normalization_confidence: Optional[Dict] = None,
         normalization_status: Optional[str] = None,
+        normalization_provider: Optional[str] = None,
     ) -> Dict:
         """
         Handle document upload, run OCR cross-reference matching against normalized fields,
@@ -1354,6 +1376,7 @@ class ConversationOrchestrator:
             raw_extracted_fields=active_raw_fields,
             normalized_fields=active_normalized_fields,
             normalization_status=normalization_status or ("AI_NORMALIZED" if normalization_confidence else "DETERMINISTIC"),
+            normalization_provider=normalization_provider or "LOCAL",
             normalization_confidence=normalization_confidence or {},
             overall_match_score=match_res.overall_score,
             matched_fields=match_res.matched_fields,
@@ -1438,7 +1461,8 @@ class ConversationOrchestrator:
                     session.pending_field = None
                     session.pending_question = None
                     from app.orchestration.state_machine.application_fsm import AppState
-                    self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
+                    target_state = AppState.READY_FOR_REVIEW if (readiness and readiness.can_submit) else AppState.VALIDATION_COMPLETED
+                    self.app_repo.update_status(session.application_id, target_state)
                     response_msg = confirm_header + self._multilang_msg(session.language, {
                         "en": "All required information and documents have been verified. Your application is ready for review.",
                         "hi": "सभी आवश्यक जानकारी और दस्तावेज़ सत्यापित हो गए हैं। आपका आवेदन समीक्षा के लिए तैयार है।",

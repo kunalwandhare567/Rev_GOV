@@ -409,3 +409,129 @@ def test_18_no_local_fallback_executed():
         with pytest.raises(LLMUnavailableError) as exc_info:
             provider.extract_nlu("Citizen utterance", "en", None)
         assert "unavailable" in str(exc_info.value).lower() or "500" in str(exc_info.value)
+
+
+def test_19_document_upload_success_and_no_fsm_error(db_session):
+    """TEST 19: Full document upload flow succeeds with HTTP 200 and transitions to READY_FOR_REVIEW."""
+    orchestrator = ConversationOrchestrator(db_session)
+    cit_repo = CitizenRepository(db_session)
+    citizen = cit_repo.resolve_or_create("+919811100019", preferred_channel="WEB")
+
+    session = orchestrator.session_repo.create_session(citizen.citizen_ref, channel="WEB", language="en")
+    app = orchestrator.app_repo.create(citizen_ref=citizen.citizen_ref, service_id="income_certificate")
+    session.application_id = app.id
+    session.filled_slots = {
+        "applicant_name": "Viki Bhausaheb Lokhande",
+        "applicant_dob": "1995-05-15",
+        "gender": "Male",
+        "aadhaar_number": "987654321098",
+        "address": "Flat 101, Shanti Nagar, Mumbai",
+        "annual_income": "300000",
+        "purpose": "Higher Education",
+    }
+    session.current_node = "DOCUMENT_CAPTURE"
+    orchestrator.session_repo.save_session(session)
+
+    # 1. Upload first doc: INCOME_PROOF -> asks for IDENTITY_PROOF
+    res1 = orchestrator.process_document_upload(
+        citizen_ref=citizen.citizen_ref,
+        doc_type="INCOME_PROOF",
+        file_ref="mock://salary_slip.pdf",
+        extracted_fields={"applicant_name": "Viki Bhausaheb Lokhande", "annual_income": "300000"},
+        raw_ocr_text="Salary slip for Viki Bhausaheb Lokhande Annual Income Rs. 3,00,000",
+        normalized_fields={"applicant_name": "Viki Bhausaheb Lokhande", "annual_income": "300000"},
+        normalization_status="DETERMINISTIC",
+        normalization_provider="LOCAL",
+    )
+    assert res1.get("verification_status") == "VERIFIED"
+    assert res1.get("overall_score") == 100.0
+    assert "error" not in res1
+    assert "Identity Proof" in res1.get("response", "")
+
+    # 2. Upload second doc: IDENTITY_PROOF -> all required docs verified -> READY_FOR_REVIEW
+    res2 = orchestrator.process_document_upload(
+        citizen_ref=citizen.citizen_ref,
+        doc_type="IDENTITY_PROOF",
+        file_ref="mock://aadhaar.pdf",
+        extracted_fields={"applicant_name": "Viki Bhausaheb Lokhande", "aadhaar_number": "987654321098"},
+        raw_ocr_text="Aadhaar card for Viki Bhausaheb Lokhande 9876 5432 1098",
+        normalized_fields={"applicant_name": "Viki Bhausaheb Lokhande", "aadhaar_number": "987654321098"},
+        normalization_status="DETERMINISTIC",
+        normalization_provider="LOCAL",
+    )
+    assert res2.get("verification_status") == "VERIFIED"
+    assert res2.get("overall_score") == 100.0
+    assert "error" not in res2
+
+    # Application should be transitioned to valid state READY_FOR_REVIEW without throwing AttributeError
+    refreshed_app = orchestrator.app_repo.get_by_id(app.id)
+    assert refreshed_app.status in ["READY_FOR_REVIEW", "VALIDATION_COMPLETED"]
+
+
+def test_20_deterministic_ocr_normalization():
+    """TEST 20: Deterministic OCR normalization correctly cleans noisy names, PAN, DOB, and Income."""
+    ocr_service = OCRService()
+    
+    # Test noisy name normalization
+    noisy_name = "Ee Ae D Viki Bhausaheb Lokhande Oa Bs Ga"
+    cleaned_name = ocr_service._normalize_name(noisy_name)
+    assert cleaned_name == "Viki Bhausaheb Lokhande"
+
+    # Test PAN normalization
+    pan_noisy = " pan : bizpl2757d "
+    cleaned_pan = ocr_service._normalize_pan(pan_noisy)
+    assert cleaned_pan == "BIZPL2757D"
+
+    # Test Income normalization
+    income_noisy = " ₹ 3,00,000 /- "
+    cleaned_income = ocr_service._normalize_income(income_noisy)
+    assert cleaned_income == "300000"
+
+    # Test Batch deterministic normalization
+    raw_dict = {
+        "applicant_name": noisy_name,
+        "pan_number": pan_noisy,
+        "annual_income": income_noisy,
+        "gender": "male"
+    }
+    normalized_dict = ocr_service._normalize_deterministic_fields(raw_dict)
+    assert normalized_dict["applicant_name"] == "Viki Bhausaheb Lokhande"
+    assert normalized_dict["pan_number"] == "BIZPL2757D"
+    assert normalized_dict["annual_income"] == "300000"
+    assert normalized_dict["gender"] == "Male"
+
+
+def test_21_field_correction_and_slot_progression(db_session):
+    """TEST 21: Answering applicant_name triggers FieldCorrector and advances to next field via NextQuestionEngine."""
+    orchestrator = ConversationOrchestrator(db_session)
+    cit_repo = CitizenRepository(db_session)
+    citizen = cit_repo.resolve_or_create("+919811100021", preferred_channel="WEB")
+
+    # Start session in SLOT_FILLING with pending_field = applicant_name
+    session = orchestrator.session_repo.create_session(citizen.citizen_ref, channel="WEB", language="en")
+    app = orchestrator.app_repo.create(citizen_ref=citizen.citizen_ref, service_id="caste_certificate")
+    session.application_id = app.id
+    session.filled_slots = {}
+    session.pending_field = "applicant_name"
+    session.current_node = "SLOT_FILLING"
+    orchestrator.session_repo.save_session(session)
+
+    reply = orchestrator.handle_message(
+        citizen_ref=citizen.citizen_ref,
+        channel="WEB",
+        text="viki bhausaheb lokhande",
+        language="en",
+    )
+
+    # 1. Successful response
+    assert reply["current_node"] == "SLOT_FILLING"
+    # 2. FieldCorrector normalized 'viki bhausaheb lokhande' -> 'Viki Bhausaheb Lokhande'
+    refreshed_session = orchestrator.session_repo.load_session(citizen.citizen_ref)
+    assert refreshed_session.filled_slots["applicant_name"] == "Viki Bhausaheb Lokhande"
+    # 3. NextQuestionEngine advanced to next missing field
+    assert refreshed_session.pending_field == "applicant_dob"
+    assert refreshed_session.pending_question is not None
+    assert len(refreshed_session.pending_question) > 0
+    # 4. Value persisted to SQLite ApplicationData
+    fields = orchestrator.app_repo.get_fields(app.id)
+    assert fields["applicant_name"] == "Viki Bhausaheb Lokhande"

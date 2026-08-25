@@ -331,6 +331,7 @@ class ApplicationRepository:
         raw_extracted_fields: Optional[Dict] = None,
         normalized_fields: Optional[Dict] = None,
         normalization_status: Optional[str] = None,
+        normalization_provider: Optional[str] = None,
         normalization_confidence: Optional[Dict] = None,
         overall_match_score: Optional[float] = None,
         matched_fields: Optional[List] = None,
@@ -368,6 +369,8 @@ class ApplicationRepository:
             doc.normalized_fields = normalized_fields
         if normalization_status is not None:
             doc.normalization_status = normalization_status
+        if normalization_provider is not None:
+            doc.normalization_provider = normalization_provider
         if normalization_confidence is not None:
             doc.normalization_confidence = normalization_confidence
         if overall_match_score is not None:

@@ -134,6 +134,7 @@ def get_documents(application_id: str, request: Request, db: Session = Depends(g
             "normalized_fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
             "normalization_confidence": getattr(d, "normalization_confidence", {}) or {},
             "normalization_status": getattr(d, "normalization_status", "DETERMINISTIC"),
+            "normalization_provider": getattr(d, "normalization_provider", "LOCAL") or "LOCAL",
             "matching": {
                 "score": d.overall_match_score or 0.0,
                 "status": d.verification_status,

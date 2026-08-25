@@ -66,6 +66,7 @@ def auto_migrate_schema():
             ("raw_extracted_fields", "JSON"),
             ("normalized_fields", "JSON"),
             ("normalization_status", "VARCHAR(32)"),
+            ("normalization_provider", "VARCHAR(32)"),
             ("normalization_confidence", "JSON"),
             ("matched_fields", "JSON"),
         ]

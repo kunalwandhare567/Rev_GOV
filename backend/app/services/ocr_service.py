@@ -231,10 +231,16 @@ class OCRService:
             logger.warning(f"[OCR_EMPTY] No text extracted from '{file_path}'")
 
         breakdown = {k: base_confidence for k in raw_fields}
-        normalized_fields = dict(raw_fields)
-        norm_metadata = {"status": "deterministic_only", "ai_normalized": False}
+        det_normalized = self._normalize_deterministic_fields(raw_fields)
+        normalized_fields = dict(det_normalized)
+        norm_metadata = {
+            "status": "DETERMINISTIC",
+            "provider": "LOCAL",
+            "ai_normalized": False,
+            "corrections": []
+        }
 
-        # Attempt OpenRouter normalization if LLM is available
+        # Attempt OpenRouter normalization if LLM is available and allowed by DataGuard
         if raw_fields or cleaned_text:
             try:
                 from app.llm.llm_service import LLMService
@@ -257,12 +263,19 @@ class OCRService:
                     if norm_res.get("confidence"):
                         breakdown.update(norm_res.get("confidence"))
                     norm_metadata = {
-                        "status": "ai_normalized",
+                        "status": "AI_NORMALIZED",
+                        "provider": "OPENROUTER",
                         "ai_normalized": True,
                         "corrections": norm_res.get("corrections", [])
                     }
             except Exception as e:
-                logger.info(f"[OCR_AI_NORM_SKIPPED] OpenRouter normalization not applied ({e}); using deterministic fields.")
+                logger.info(f"[OCR_AI_NORM_SKIPPED] DataGuard blocked or OpenRouter normalization not applied ({e}); using deterministic fields.")
+                norm_metadata = {
+                    "status": "DETERMINISTIC",
+                    "provider": "LOCAL",
+                    "ai_normalized": False,
+                    "corrections": []
+                }
 
         result = OCRResult(
             raw_text=raw_text or "",
@@ -278,9 +291,121 @@ class OCRService:
 
         logger.info(
             f"[OCR_COMPLETED] Provider={result.provider}, Type={result.doc_type_detected}, "
-            f"Fields={list(normalized_fields.keys())}, AI_Norm={norm_metadata.get('ai_normalized')}"
+            f"Fields={list(normalized_fields.keys())}, Status={norm_metadata.get('status')}, "
+            f"NormProvider={norm_metadata.get('provider')}"
         )
         return result
+
+    def _normalize_name(self, name_str: str) -> Optional[str]:
+        """Normalize noisy OCR extracted name by removing OCR noise artifacts."""
+        if not name_str or not str(name_str).strip():
+            return None
+        val = str(name_str).strip()
+        val = re.sub(r'[^A-Za-z\u0900-\u097F\s\.]', ' ', val)
+        val = re.sub(r'\s+', ' ', val).strip()
+        words = val.split()
+        if not words:
+            return None
+
+        # Strip common non-name headers/prefixes if present
+        stop_words = {"name", "applicant", "shri", "smt", "mr", "mrs", "miss", "dr", "kumar", "kumari", "नाव", "नाम"}
+        while words and words[0].lower().rstrip('.') in stop_words:
+            words = words[1:]
+
+        if not words:
+            return None
+
+        # Identify core name block (removing leading and trailing 1-2 char OCR artifacts like Ee, Ae, D, Oa, Bs, Ga)
+        start = 0
+        while start < len(words) and len(words[start].rstrip('.')) <= 2:
+            if start + 1 < len(words) and len(words[start + 1]) >= 3 and len(words) - start <= 3:
+                break
+            start += 1
+
+        end = len(words)
+        while end > start and len(words[end - 1].rstrip('.')) <= 2:
+            end -= 1
+
+        core = words[start:end]
+        if core and len(core) >= 1:
+            res = " ".join(core)
+            return res.title() if res.isascii() else res
+
+        res = " ".join(words)
+        return res.title() if res.isascii() else res
+
+    def _normalize_pan(self, pan_str: str) -> Optional[str]:
+        """Normalize PAN number to uppercase and validate format."""
+        if not pan_str:
+            return None
+        pan = re.sub(r'[^A-Za-z0-9]', '', str(pan_str)).upper()
+        if re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan):
+            return pan
+        m = re.search(r'[A-Z]{5}[0-9]{4}[A-Z]', pan)
+        if m:
+            return m.group(0)
+        return pan if len(pan) == 10 else None
+
+    def _normalize_income(self, income_str: str) -> Optional[str]:
+        """Normalize currency/income strings into a clean integer string (e.g. ₹3,00,000 -> 300000)."""
+        if not income_str:
+            return None
+        cleaned = re.sub(r'[₹Rs\.inrINR,\s]', '', str(income_str)).strip()
+        m = re.search(r'(\d+)', cleaned)
+        if m:
+            try:
+                return str(int(m.group(1)))
+            except ValueError:
+                return m.group(1)
+        return None
+
+    def _normalize_aadhaar(self, aadhaar_str: str) -> Optional[str]:
+        """Normalize 12-digit Aadhaar number without inventing digits."""
+        if not aadhaar_str:
+            return None
+        digits = re.sub(r'[^0-9]', '', str(aadhaar_str))
+        if len(digits) == 12:
+            return digits
+        return None
+
+    def _normalize_deterministic_fields(self, raw_fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply field-specific deterministic normalization to all raw extracted fields."""
+        normalized: Dict[str, Any] = {}
+        for k, v in raw_fields.items():
+            if v is None or not str(v).strip():
+                continue
+            val_str = str(v).strip()
+            if k in ("applicant_name", "full_name", "father_name", "mother_name", "employer_name"):
+                norm_val = self._normalize_name(val_str)
+                if norm_val:
+                    normalized[k] = norm_val
+            elif k in ("pan_number", "pan"):
+                norm_val = self._normalize_pan(val_str)
+                if norm_val:
+                    normalized[k] = norm_val
+            elif k in ("applicant_dob", "dob", "birth_date"):
+                norm_val = self._normalize_date(val_str)
+                if norm_val:
+                    normalized[k] = norm_val
+            elif k in ("annual_income", "gross_income", "amount"):
+                norm_val = self._normalize_income(val_str)
+                if norm_val:
+                    normalized[k] = norm_val
+            elif k in ("aadhaar_number", "aadhaar", "uid"):
+                norm_val = self._normalize_aadhaar(val_str)
+                if norm_val:
+                    normalized[k] = norm_val
+            elif k == "gender":
+                g = val_str.upper()
+                if g in ("MALE", "M", "पुरुष"):
+                    normalized[k] = "Male"
+                elif g in ("FEMALE", "F", "महिला"):
+                    normalized[k] = "Female"
+                else:
+                    normalized[k] = "Transgender"
+            else:
+                normalized[k] = val_str
+        return normalized
 
     def detect_document_type(self, text: str) -> str:
         """Identify document type from raw OCR text using multi-lingual keyword analysis."""

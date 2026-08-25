@@ -102,7 +102,7 @@ Return ONLY the JSON object. No markdown, no backticks, no explanations.
 
 
 def _extract_json_from_llm(result_text: str) -> Dict:
-    """Extract and parse JSON object from LLM response text, ignoring markdown wrappers."""
+    """Extract and parse JSON object from LLM response text, ignoring markdown wrappers and repairing unescaped characters/truncations."""
     if not result_text or not result_text.strip():
         raise ValueError("Empty response text from LLM")
 
@@ -110,7 +110,7 @@ def _extract_json_from_llm(result_text: str) -> Dict:
 
     # 1. Try direct parse
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except Exception:
         pass
 
@@ -118,7 +118,7 @@ def _extract_json_from_llm(result_text: str) -> Dict:
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(1))
+            return json.loads(m.group(1), strict=False)
         except Exception:
             pass
 
@@ -128,7 +128,27 @@ def _extract_json_from_llm(result_text: str) -> Dict:
     if start != -1 and end != -1 and end > start:
         json_str = text[start:end + 1]
         try:
-            return json.loads(json_str)
+            return json.loads(json_str, strict=False)
+        except Exception:
+            # Clean trailing commas
+            cleaned = re.sub(r',\s*([\}\]])', r'\1', json_str)
+            try:
+                return json.loads(cleaned, strict=False)
+            except Exception:
+                pass
+
+    # 4. Attempt repair for truncated JSON (e.g. cut off at token limit)
+    if start != -1:
+        truncated = text[start:]
+        quote_count = truncated.count('"') - truncated.count(r'\"')
+        if quote_count % 2 != 0:
+            truncated += '"'
+        open_braces = truncated.count('{')
+        close_braces = truncated.count('}')
+        if open_braces > close_braces:
+            truncated += '}' * (open_braces - close_braces)
+        try:
+            return json.loads(truncated, strict=False)
         except Exception:
             pass
 
@@ -204,7 +224,7 @@ class OpenRouterProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
-    def _call(self, messages: list, temperature: float = 0.3, max_tokens: int = 100, timeout: float = 45.0) -> str:
+    def _call(self, messages: list, temperature: float = 0.3, max_tokens: int = 1000, timeout: float = 45.0) -> str:
         """Make API call to OpenRouter. Raises LLMUnavailableError on failure without fallback."""
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -212,14 +232,13 @@ class OpenRouterProvider(LLMProvider):
             "X-Title": "Multilingual Citizen Revenue Services Platform",
             "Content-Type": "application/json",
         }
-        max_configured = getattr(settings, "LLM_MAX_TOKENS", 100) or getattr(settings, "OPENROUTER_MAX_TOKENS", 100) or 100
-        tokens = min(max_tokens, max_configured) if max_tokens else max_configured
+        max_configured = getattr(settings, "OPENROUTER_MAX_TOKENS", 1000) or getattr(settings, "LLM_MAX_TOKENS", 1000) or 1000
+        tokens = max(max_tokens, max_configured) if max_tokens else max_configured
         payload = {
             "model": self._model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": tokens,
-            "reasoning": {"effort": "none"},
         }
         try:
             response = httpx.post(self._api_url, headers=headers, json=payload, timeout=timeout)
@@ -270,7 +289,7 @@ class OpenRouterProvider(LLMProvider):
                 msgs.append({"role": role, "content": m.content})
             else:
                 msgs[0]["content"] += f"\n\nContext:\n{m.content}"
-        text = self._call(msgs, temperature=temperature, max_tokens=getattr(settings, "LLM_MAX_TOKENS", 100))
+        text = self._call(msgs, temperature=temperature, max_tokens=getattr(settings, "LLM_MAX_TOKENS", 1000))
         return LLMResponse(text=text, provider="openrouter", model=self._model)
 
     def extract_nlu(self, text: str, language: str, context: Optional[Dict]) -> Dict:
@@ -283,7 +302,7 @@ class OpenRouterProvider(LLMProvider):
                 "content": f"Citizen Utterance: {text}\nLanguage: {language}\nApplication Context: {context_str}"
             }
         ]
-        result_text = self._call(msgs, temperature=0.1, max_tokens=300)
+        result_text = self._call(msgs, temperature=0.1, max_tokens=1000)
         try:
             return _extract_json_from_llm(result_text)
         except LLMUnavailableError:
@@ -297,12 +316,18 @@ class OpenRouterProvider(LLMProvider):
                     "content": (
                         f"Citizen Utterance: {text}\nLanguage: {language}\n"
                         f"Application Context: {context_str}\n\n"
-                        f"CRITICAL: Output ONLY a single JSON object. Do not include markdown codeblocks or any other text."
+                        f"CRITICAL: Output ONLY a single valid JSON object. Close all strings and braces. Do not include markdown codeblocks or any other text."
                     )
                 }
             ]
-            retry_text = self._call(retry_msgs, temperature=0.0, max_tokens=300)
-            return _extract_json_from_llm(retry_text)
+            try:
+                retry_text = self._call(retry_msgs, temperature=0.0, max_tokens=1000)
+                return _extract_json_from_llm(retry_text)
+            except LLMUnavailableError:
+                raise
+            except Exception as e2:
+                logger.warning(f"OpenRouter NLU retry JSON parse failed: {e2}. Falling back to structured heuristic mapping.")
+                return _heuristic_nlu_fallback(text, language, context)
 
     def normalize_ocr_fields(
         self,

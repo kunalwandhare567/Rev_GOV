@@ -61,7 +61,16 @@ const useChatStore = create((set, get) => ({
       validationErrors: resp.validation_errors ?? get().validationErrors,
       applicationNumber:resp.application_number ?? get().applicationNumber,
       serviceType:      resp.service_type     ?? (resp.extra_data?.service_type ?? get().serviceType),
-      documents:        resp.documents        ?? get().documents,
+      documents: resp.documents ? (
+        (() => {
+          const map = new Map()
+          for (const d of resp.documents) {
+            const key = d.id || d.doc_type
+            map.set(key, d)
+          }
+          return Array.from(map.values())
+        })()
+      ) : get().documents,
       isConnected: true,
     })
   },

@@ -968,7 +968,7 @@ export default function CitizenChat() {
               
               {store.applicationNumber ? (
                 <div className={styles.docsList}>
-                  {store.documents.map((doc) => {
+                  {Array.from(new Map(store.documents.map(d => [d.id || d.doc_type, d])).values()).map((doc) => {
                     const isMismatch = doc.verification_status === 'MISMATCH'
                     const matchScore = doc.matching?.score !== undefined && doc.matching?.score !== null
                       ? Number(doc.matching.score)
@@ -977,10 +977,9 @@ export default function CitizenChat() {
                       ? Number(doc.normalized_ocr.confidence.applicant_name) * 100
                       : Number(doc.confidence_score || 1.0) * 100
                     const normFields = doc.normalized_ocr?.fields || doc.normalized_fields || doc.extracted_fields || {}
-                    const rawText = doc.raw_ocr?.text || doc.raw_ocr_text
 
                     return (
-                      <div key={doc.id} className={`${styles.docCard} ${isMismatch ? styles.mismatchDoc : ''}`}>
+                      <div key={doc.id || doc.doc_type} className={`${styles.docCard} ${isMismatch ? styles.mismatchDoc : ''}`}>
                         <div className={styles.docHeader}>
                           <FileText size={18} style={{color:'var(--clr-primary-500)'}}/>
                           <div className={styles.docTitleBlock}>
@@ -1004,24 +1003,17 @@ export default function CitizenChat() {
                           </span>
                         </div>
 
-                        {/* Normalized vs Raw OCR Transparency Box */}
+                        {/* Normalized OCR Only (Raw OCR Hidden from Citizen UI) */}
                         <div className={styles.ocrFieldDetails}>
                           {Object.keys(normFields).length > 0 && (
                             <div className={styles.ocrSection}>
-                              <div className={styles.ocrSectionTitle}>Normalized OCR</div>
+                              <div className={styles.ocrSectionTitle}>NORMALIZED OCR</div>
                               {Object.entries(normFields).map(([k, v]) => (
                                 <div key={k} className={styles.ocrFieldRow}>
                                   <span className={styles.ocrFieldName}>{k.replace(/_/g, ' ')}:</span>
                                   <span className={styles.ocrFieldVal} style={{ color: 'var(--rg-success, #198754)' }}>{String(v)}</span>
                                 </div>
                               ))}
-                            </div>
-                          )}
-
-                          {rawText && (
-                            <div className={styles.ocrSection}>
-                              <div className={styles.ocrSectionTitle}>Raw OCR</div>
-                              <div className={styles.rawOcrSnippet}>{rawText}</div>
                             </div>
                           )}
                         </div>
