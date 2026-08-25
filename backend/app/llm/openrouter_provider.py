@@ -169,7 +169,7 @@ class OpenRouterProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
-    def _call(self, messages: list, temperature: float = 0.3, max_tokens: int = 1000, timeout: float = 45.0) -> str:
+    def _call(self, messages: list, temperature: float = 0.3, max_tokens: int = 100, timeout: float = 45.0) -> str:
         """Make API call to OpenRouter. Raises LLMUnavailableError on failure."""
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -177,7 +177,8 @@ class OpenRouterProvider(LLMProvider):
             "X-Title": "Multilingual Citizen Revenue Services Platform",
             "Content-Type": "application/json",
         }
-        tokens = max_tokens or getattr(settings, "OPENROUTER_MAX_TOKENS", 1000) or 1000
+        max_configured = getattr(settings, "LLM_MAX_TOKENS", 100) or getattr(settings, "OPENROUTER_MAX_TOKENS", 100) or 100
+        tokens = min(max_tokens, max_configured) if max_tokens else max_configured
         payload = {
             "model": self._model,
             "messages": messages,
@@ -218,7 +219,7 @@ class OpenRouterProvider(LLMProvider):
                 msgs.append({"role": role, "content": m.content})
             else:
                 msgs[0]["content"] += f"\n\nContext:\n{m.content}"
-        text = self._call(msgs, temperature=temperature, max_tokens=600)
+        text = self._call(msgs, temperature=temperature, max_tokens=getattr(settings, "LLM_MAX_TOKENS", 100))
         return LLMResponse(text=text, provider="openrouter", model=self._model)
 
     def extract_nlu(self, text: str, language: str, context: Optional[Dict]) -> Dict:

@@ -7,10 +7,11 @@ export default function AuthGuard({ children, requiredRole }) {
 
   if (requiredRole === 'CITIZEN') {
     if (!isCitizenAuthenticated && !user) {
-      return <Navigate to="/" replace />
+      return <Navigate to="/login" replace />
     }
     return children
   }
+
 
   if (!isAuthenticated || !user) {
     const loginPath = requiredRole === ROLES.ADMIN ? '/admin/login' : '/officer/login'

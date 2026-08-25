@@ -16,5 +16,9 @@ export default defineConfig({
     alias: {
       '@': '/src',
     },
+    // Force a single copy of React to fix React 19 + Zustand v5 hook error
+    dedupe: ['react', 'react-dom', 'react-router-dom'],
   },
 })
+
+

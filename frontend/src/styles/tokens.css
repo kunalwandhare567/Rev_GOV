@@ -40,6 +40,7 @@
   --rg-surface-dim:             #d8dadd;
   --rg-inverse-surface:         #2d3133;
   --rg-inverse-on-surface:      #eff1f4;
+  --rg-surface-panel:           #f0f2f5;
 
   /* ── On-Surface Text ── */
   --rg-on-background:      #191c1e;
@@ -161,7 +162,10 @@
   --radius-lg:   16px;
   --radius-xl:   20px;
   --radius-2xl:  28px;
+  --radius-card: 20px;
+  --radius-chip: 10px;
   --radius-full: 9999px;
+  --radius-pill: 9999px;
 
   --shadow-xs:  0 1px 2px rgba(23,32,51,0.04);
   --shadow-sm:  0 1px 3px rgba(23,32,51,0.06), 0 1px 2px rgba(23,32,51,0.04);
@@ -175,15 +179,35 @@
   --ease-base:   200ms ease;
   --ease-slow:   350ms cubic-bezier(0.4,0,0.2,1);
 
+  /* ── Z-index system ── */
   --z-base:    0;
   --z-raise:   10;
+  --z-card:    10;
+  --z-sticky:  100;
   --z-overlay: 100;
-  --z-modal:   200;
-  --z-toast:   300;
+  --z-drawer:  200;
+  --z-modal:   300;
+  --z-toast:   400;
 
-  --sidebar-width: 280px;
-  --topbar-height: 64px;
-  --content-max:   1200px;
+  /* ── Responsive layout dimensions ── */
+  --sidebar-w:         240px;
+  --sidebar-icon-w:    64px;
+  --right-panel-w:     360px;
+  --right-panel-sm-w:  300px;
+  --topbar-h:          56px;
+  --bottomnav-h:       64px;
+  --sidebar-width:     240px;
+  --topbar-height:     64px;
+  --content-max:       1200px;
+
+  /* ── Fluid type scale ── */
+  --text-fluid-xs:   clamp(0.6875rem, 1.5vw, 0.75rem);
+  --text-fluid-sm:   clamp(0.75rem,   1.8vw, 0.875rem);
+  --text-fluid-base: clamp(0.875rem,  2vw,   1rem);
+  --text-fluid-lg:   clamp(1rem,      2.5vw, 1.125rem);
+  --text-fluid-xl:   clamp(1.125rem,  3vw,   1.5rem);
+  --text-fluid-2xl:  clamp(1.5rem,    4vw,   2rem);
+  --text-fluid-3xl:  clamp(2rem,      5vw,   3rem);
 
   /* citizen theme aliases */
   --citizen-bg:      var(--rg-background);

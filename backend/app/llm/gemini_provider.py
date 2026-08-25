@@ -134,7 +134,10 @@ class GeminiProvider(LLMProvider):
             model = genai.GenerativeModel(
                 self._model_name,
                 system_instruction="\n\n".join(system_parts),
-                generation_config=genai.GenerationConfig(temperature=temperature),
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=getattr(settings, "LLM_MAX_TOKENS", 100)
+                ),
             )
 
             # Start chat with all history except the last user message

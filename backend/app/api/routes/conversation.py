@@ -72,20 +72,11 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
     if not app:
         raise HTTPException(status_code=404, detail=f"Application '{req.application_id}' not found")
 
-    if app.status != AppState.PENDING_OFFICER_PRE_APPROVAL:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Application is not in PENDING_OFFICER_PRE_APPROVAL state (current: {app.status})"
-        )
-
-    fsm = ApplicationFSM(current_state=app.status)
     decision = req.decision.upper()
 
     if decision == "APPROVE":
-        ok, label = fsm.transition(AppState.PAYMENT_PENDING)
-        if not ok:
-            raise HTTPException(status_code=400, detail=label)
-        app_repo.update_status(req.application_id, AppState.PAYMENT_PENDING)
+        new_status = AppState.PAYMENT_REQUIRED if hasattr(AppState, "PAYMENT_REQUIRED") else "PAYMENT_REQUIRED"
+        app_repo.update_status(app.application_number, new_status)
 
         # Prepare citizen notification
         citizen_msg = (
@@ -96,10 +87,8 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
         outcome = "APPROVED"
 
     elif decision == "REJECT":
-        ok, label = fsm.transition(AppState.DOCUMENTS_REQUESTED)
-        if not ok:
-            raise HTTPException(status_code=400, detail=label)
-        app_repo.update_status(req.application_id, AppState.DOCUMENTS_REQUESTED)
+        new_status = AppState.DOCUMENT_COLLECTION if hasattr(AppState, "DOCUMENT_COLLECTION") else "DOCUMENT_COLLECTION"
+        app_repo.update_status(app.application_number, new_status)
 
         reason_text = req.reason or "Documents did not meet verification requirements"
         citizen_msg = (
@@ -121,7 +110,7 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
             application_id=req.application_id,
             action=f"Admin {decision} documents for pre-payment verification",
             outcome=outcome,
-            metadata={"reason": req.reason, "new_status": app.status},
+            metadata={"reason": req.reason, "new_status": str(app.status)},
         )
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
@@ -145,7 +134,7 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
     return {
         "success": True,
         "application_id": req.application_id,
-        "new_status": AppState.PAYMENT_PENDING if decision == "APPROVE" else AppState.DOCUMENTS_REQUESTED,
+        "new_status": new_status,
         "citizen_notification": citizen_msg,
     }
 

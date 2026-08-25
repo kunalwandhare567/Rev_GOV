@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { ArrowLeft, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
+import client from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import { STATUS_CONFIG } from '../../utils/constants'
 import styles from './OfficerReview.module.css'
@@ -62,50 +63,43 @@ export default function OfficerReview() {
   const sendStatusNotification = async () => {
     setSendingNotif(true)
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/whatsapp/notify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          application_number: appNumber,
-          event_type: 'STATUS_CHANGED',
-          new_status: app.status,
-        }),
+      await client.post('/whatsapp/notify', {
+        application_number: appNumber,
+        event_type: 'STATUS_CHANGED',
+        new_status: app.status,
       })
-      if (res.ok) toast.success('📲 WhatsApp notification sent to citizen!')
-      else toast.error('Notification failed')
-    } catch { toast.error('Notification service unreachable') }
+      toast.success('📲 WhatsApp notification sent to citizen!')
+    } catch { toast.error('Notification failed or service unreachable') }
     finally { setSendingNotif(false) }
   }
 
-  // Admin pre-payment document decision (PENDING_OFFICER_PRE_APPROVAL state)
+  // Admin pre-payment document decision
   const adminDocDecision = async (decision) => {
     if (decision === 'REJECT' && !rejectReason.trim()) {
       toast.error('Please enter a rejection reason before rejecting documents')
       return
     }
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/conversation/admin-doc-decision`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          application_id: app?.id || appNumber,
-          decision,
-          reason: decision === 'REJECT' ? rejectReason : null,
-          admin_identifier: 'admin',
-        }),
+      const result = await client.post('/conversation/admin-doc-decision', {
+        application_id: app?.id || appNumber,
+        decision,
+        reason: decision === 'REJECT' ? rejectReason : null,
+        admin_identifier: 'admin',
       })
-      const result = await res.json()
-      if (res.ok && result.success) {
+      if (result && result.success) {
         toast.success(decision === 'APPROVE'
           ? '✅ Documents approved! Citizen notified to pay.'
           : '❌ Documents rejected. Citizen notified to re-upload.')
         queryClient.invalidateQueries(['app-detail', appNumber])
         queryClient.invalidateQueries(['recent-apps'])
         setRejectReason('')
+        setConfirmAction(null)
       } else {
-        toast.error(result.detail || 'Admin decision failed')
+        toast.error(result?.detail || 'Admin decision failed')
       }
-    } catch { toast.error('Could not connect to server') }
+    } catch (err) {
+      toast.error(err.message || 'Could not connect to server')
+    }
   }
 
 
@@ -347,8 +341,8 @@ export default function OfficerReview() {
             {sendingNotif ? '⏳ Sending…' : '💬 Notify Citizen (WhatsApp)'}
           </button>
 
-          {/* ── Admin Pre-Payment Approval (PENDING_OFFICER_PRE_APPROVAL) ── */}
-          {app.status === 'PENDING_OFFICER_PRE_APPROVAL' && (
+          {/* ── Admin Pre-Payment Approval ── */}
+          {['PENDING_OFFICER_PRE_APPROVAL', 'SUBMITTED_FOR_VERIFICATION', 'UNDER_REVIEW', 'DOCUMENT_COLLECTION', 'OCR_PROCESSING', 'VALIDATION_COMPLETED', 'FINAL_REVIEW'].includes(app.status) && (
             <div style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', border: '1px solid #6366f1', borderRadius: 12, padding: 20, marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                 <span style={{ fontSize: 22 }}>📋</span>

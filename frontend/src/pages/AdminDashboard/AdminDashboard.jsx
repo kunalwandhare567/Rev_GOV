@@ -215,7 +215,7 @@ export default function AdminDashboard() {
                      <td className={styles.td}>
                        <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
                          <Link to={`/admin/review/${app.application_number}`} className={styles.reviewBtn}>Review</Link>
-                         {app.status === 'UNDER_REVIEW' && (
+                         {['UNDER_REVIEW', 'SUBMITTED', 'SUBMITTED_FOR_VERIFICATION', 'PENDING_OFFICER_PRE_APPROVAL', 'FINAL_REVIEW', 'DOCUMENT_COLLECTION', 'VALIDATION_COMPLETED'].includes(app.status) && (
                            <button
                              className={styles.decideBtn}
                              onClick={() => {

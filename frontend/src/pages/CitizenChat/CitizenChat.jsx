@@ -11,6 +11,221 @@ import { applicationsApi } from '../../api/applications'
 import { t, LANGUAGE_NAMES } from '../../i18n'
 import { CONV_NODES, NODE_STEPS, FRAUD_THRESHOLDS, SUPPORTED_LANGS, APP_STATUS } from '../../utils/constants'
 import styles from './CitizenChat.module.css'
+import { useRightPanel } from '../../layouts/RightPanelContext'
+import { getStatusUI, TIMELINE_STAGES, getTimelineState } from '../../utils/statusMap'
+
+/* ── Activity + Slots Right Panel ── */
+/* ── Activity + Slots + Your Journey Right Panel ── */
+function AssistantRightPanel({
+  filledSlots,
+  serviceFields,
+  applicationNumber,
+  applicationStatus,
+  progressPercent,
+  currentNode,
+  currentStepIdx,
+  totalSlots,
+  filledCount,
+  slotPct,
+  anomalyScore,
+  language,
+  demoMode,
+  ivrActive,
+  onToggleIvr,
+}) {
+  const timelineStages = TIMELINE_STAGES
+  const statusUI = getStatusUI(applicationStatus)
+
+  const SENSITIVE_FIELDS = ['aadhaar', 'pan', 'account', 'password']
+  const isSensitive = (name) => SENSITIVE_FIELDS.some(k => name.toLowerCase().includes(k))
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      {/* SECTION 1: Application Progress (Your Activity) */}
+      {applicationNumber && (
+        <div style={{ background: 'var(--rg-surface-white)', borderRadius: 16, border: '1px solid var(--rg-outline-variant)', padding: '1rem' }}>
+          <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--rg-text-body)', marginBottom: '0.75rem' }}>
+            Application Progress
+          </div>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--rg-text-heading)', marginBottom: '0.25rem', fontFamily: 'var(--font-mono)' }}>#{applicationNumber}</div>
+          {applicationStatus && (
+            <span className={`status-chip chip-${statusUI.color}`} style={{ marginBottom: '0.75rem', display: 'inline-flex' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>{statusUI.icon}</span>
+              {statusUI.label}
+            </span>
+          )}
+          {/* Progress bar */}
+          {progressPercent != null && (
+            <div style={{ margin: '0.5rem 0' }}>
+              <div style={{ height: 6, background: 'var(--rg-surface-container)', borderRadius: 9999, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progressPercent}%`, background: 'var(--rg-primary)', borderRadius: 9999, transition: 'width 0.5s' }} />
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--rg-text-body)', marginTop: '0.25rem' }}>{progressPercent}% complete</div>
+            </div>
+          )}
+          {/* Timeline */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
+            {timelineStages.map((stage) => {
+              const state = getTimelineState(stage, applicationStatus)
+              return (
+                <div key={stage.key} style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                  <div style={{
+                    width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: state === 'done' ? 'var(--rg-success)' : state === 'active' ? 'var(--rg-primary)' : 'var(--rg-surface-container)',
+                    border: `2px solid ${state === 'done' ? 'var(--rg-success)' : state === 'active' ? 'var(--rg-primary)' : 'var(--rg-outline-variant)'}`,
+                  }}>
+                    {state === 'done' && (
+                      <span className="material-symbols-outlined" style={{ fontSize: 12, color: '#fff', fontVariationSettings: "'FILL' 1" }}>check</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: '0.8125rem', fontWeight: state === 'active' ? 700 : 500, color: state === 'done' ? 'var(--rg-success)' : state === 'active' ? 'var(--rg-primary)' : 'var(--rg-text-body)' }}>
+                    {stage.label}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 2: Extracted Information / Slots */}
+      {serviceFields && serviceFields.length > 0 && (
+        <div style={{ background: 'var(--rg-surface-white)', borderRadius: 16, border: '1px solid var(--rg-outline-variant)', padding: '1rem' }}>
+          <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--rg-text-body)', marginBottom: '0.75rem' }}>
+            Extracted Information
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {serviceFields.map(field => {
+              const val = filledSlots?.[field.name]
+              const filled = val !== undefined && val !== null && val !== ''
+              const sensitive = isSensitive(field.name)
+              return (
+                <div key={field.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.375rem 0', borderBottom: '1px solid var(--rg-outline-variant)' }}>
+                  <span style={{ fontSize: '0.8125rem', color: 'var(--rg-text-body)', textTransform: 'capitalize' }}>
+                    {field.label || field.name.replace(/_/g, ' ')}
+                  </span>
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: filled ? 'var(--rg-text-heading)' : 'var(--rg-outline)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    {filled ? (
+                      <>
+                        <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--rg-success)', fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                        {sensitive ? `${String(val).slice(0, 4)}••••` : val}
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--rg-outline)', fontSize: '0.75rem' }}>Awaiting…</span>
+                    )}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 3: Your Journey (Moved from Left Sidebar) */}
+      <div style={{ background: 'var(--rg-surface-white)', borderRadius: 16, border: '1px solid var(--rg-outline-variant)', padding: '1rem' }}>
+        <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--rg-text-body)', marginBottom: '0.75rem' }}>
+          Your Journey
+        </div>
+
+        {/* Stepper list */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+          {NODE_STEPS.map((node, idx) => {
+            const done = idx < currentStepIdx
+            const active = node === currentNode
+            return (
+              <div key={node} style={{
+                display: 'flex', alignItems: 'center', gap: '0.625rem',
+                padding: '0.375rem 0.5rem', borderRadius: 10,
+                background: active ? 'rgba(0, 53, 95, 0.06)' : 'transparent',
+                transition: 'all 0.18s ease'
+              }}>
+                <div style={{
+                  width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justify: 'center',
+                  fontSize: '10px', fontWeight: 700,
+                  background: done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-surface-white)',
+                  borderColor: done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-outline-variant)',
+                  borderStyle: 'solid', borderWidth: 2,
+                  color: done || active ? '#ffffff' : 'var(--rg-outline)'
+                }}>
+                  {done ? '✓' : idx + 1}
+                </div>
+                <span style={{
+                  fontSize: '0.8125rem',
+                  fontWeight: active ? 600 : 500,
+                  color: done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-text-body)'
+                }}>
+                  {NODE_STEP_LABELS[language]?.[node] || node}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Field filling progress */}
+        {currentNode === CONV_NODES.SLOT_FILLING && totalSlots > 0 && (
+          <div style={{ marginTop: '0.75rem', paddingTop: '0.5rem', borderTop: '1px solid var(--rg-outline-variant)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--rg-text-body)', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between' }}>
+              <span>Field Progress</span>
+              <span style={{ fontWeight: 600 }}>{filledCount}/{totalSlots} {t(language, 'chat.slotProgress')}</span>
+            </div>
+            <div style={{ height: 6, background: 'var(--rg-surface-container-high)', borderRadius: 9999, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${slotPct}%`, background: 'var(--rg-secondary)', borderRadius: 9999, transition: 'width 0.4s ease' }} />
+            </div>
+          </div>
+        )}
+
+        {/* Application Number Box */}
+        {applicationNumber && (
+          <div style={{
+            marginTop: '0.75rem', background: 'rgba(0, 53, 95, 0.05)',
+            border: '1px solid rgba(0, 53, 95, 0.12)', borderRadius: 10, padding: '0.5rem 0.75rem'
+          }}>
+            <span style={{ fontSize: '0.6875rem', color: 'var(--rg-text-body)', display: 'block', marginBottom: '0.125rem' }}>Application ID</span>
+            <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--rg-primary)', fontWeight: 700, wordBreak: 'break-all' }}>
+              {applicationNumber}
+            </span>
+          </div>
+        )}
+
+        {/* Risk Score */}
+        {demoMode && anomalyScore != null && (
+          <div style={{
+            marginTop: '0.5rem', background: 'var(--rg-surface-container-low)',
+            borderRadius: 10, padding: '0.5rem 0.75rem', border: '1px solid var(--rg-outline-variant)',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+          }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--rg-text-body)' }}>Risk Score</span>
+            <span style={{ fontSize: '1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: getAnomalyColor(anomalyScore) }}>
+              {anomalyScore.toFixed(2)}
+            </span>
+          </div>
+        )}
+
+        {/* IVR Dial Button */}
+        {onToggleIvr && (
+          <div style={{ marginTop: '0.875rem' }}>
+            <button
+              className={`${styles.voiceModeBtn} ${ivrActive ? styles.active : ''}`}
+              onClick={onToggleIvr}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                gap: '0.5rem', padding: '0.625rem 1rem',
+                background: ivrActive ? 'var(--rg-error)' : 'var(--rg-primary)',
+                color: '#ffffff', borderRadius: 12, border: 'none',
+                fontWeight: 600, fontSize: '0.75rem', cursor: 'pointer',
+                transition: 'all 0.18s ease'
+              }}
+            >
+              <Phone size={14} /> {ivrActive ? 'Hang Up IVR' : 'Dial IVR Call'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 const SERVICE_LABELS = {
   income_certificate:  { en: 'Income Certificate',  hi: 'आय प्रमाण पत्र',  mr: 'उत्पन्न प्रमाणपत्र' },
@@ -77,6 +292,7 @@ export default function CitizenChat() {
   const store = useChatStore()
   const { demoMode } = useUIStore()
   const { isCitizenAuthenticated, citizenUser } = useAuthStore()
+  const { setRightPanel, clearRightPanel } = useRightPanel()
 
   // Auto-resolve citizen identifier from auth store
   const resolvedId = citizenUser?.citizen_id || citizenUser?.email || citizenUser?.phone || store.citizenIdentifier || ''
@@ -125,6 +341,54 @@ export default function CitizenChat() {
       if (resolvedId) setCitizenId(resolvedId)
     }
   }, [isCitizenAuthenticated, resolvedId])
+
+  // ── Right Panel: Activity + Slots + Your Journey ──
+  const currentService = store.selectedService || preselectedService
+  const serviceFields  = currentService ? (SERVICE_FIELDS[currentService] || []) : []
+
+  const currentStepIdx = NODE_STEPS.indexOf(store.currentNode)
+  const totalSlots = store.missingSlots.length + Object.keys(store.filledSlots).length
+  const filledCount = Object.keys(store.filledSlots).length
+  const slotPct = totalSlots > 0 ? Math.round((filledCount / totalSlots) * 100) : 0
+
+  useEffect(() => {
+    setRightPanel(
+      'Your Activity',
+      <AssistantRightPanel
+        filledSlots={store.filledSlots}
+        serviceFields={serviceFields}
+        applicationNumber={store.applicationNumber}
+        applicationStatus={store.applicationStatus}
+        progressPercent={store.progressPercent}
+        currentNode={store.currentNode}
+        currentStepIdx={currentStepIdx}
+        totalSlots={totalSlots}
+        filledCount={filledCount}
+        slotPct={slotPct}
+        anomalyScore={store.anomalyScore}
+        language={store.language}
+        demoMode={demoMode}
+        ivrActive={ivrActive}
+        onToggleIvr={() => setIvrActive(v => !v)}
+      />
+    )
+    return () => clearRightPanel()
+  }, [
+    store.filledSlots,
+    store.applicationNumber,
+    store.applicationStatus,
+    store.progressPercent,
+    store.currentNode,
+    store.anomalyScore,
+    store.language,
+    currentService,
+    currentStepIdx,
+    totalSlots,
+    filledCount,
+    slotPct,
+    demoMode,
+    ivrActive,
+  ])
 
   // Fetch initial session state
   useEffect(() => {
@@ -469,10 +733,6 @@ export default function CitizenChat() {
     }
   }
 
-  const currentStepIdx = NODE_STEPS.indexOf(store.currentNode)
-  const totalSlots = store.missingSlots.length + Object.keys(store.filledSlots).length
-  const filledCount = Object.keys(store.filledSlots).length
-  const slotPct = totalSlots > 0 ? Math.round((filledCount / totalSlots) * 100) : 0
   const activeFields = SERVICE_FIELDS[store.serviceType] || []
 
   if (!idSet) {
@@ -497,48 +757,6 @@ export default function CitizenChat() {
 
   return (
     <div className={styles.shell}>
-      {/* LEFT SIDEBAR: Journey Stepper */}
-      <aside className={styles.sidebar}>
-        <div className={styles.sidebarTitle}>Your Journey</div>
-        <div className={styles.steps}>
-          {NODE_STEPS.map((node, idx) => {
-            const done = idx < currentStepIdx
-            const active = node === store.currentNode
-            return (
-              <div key={node} className={`${styles.step} ${done ? styles.done : ''} ${active ? styles.active : ''}`}>
-                <div className={styles.stepDot}>{done ? '✓' : idx + 1}</div>
-                <span className={styles.stepLabel}>{NODE_STEP_LABELS[store.language]?.[node] || node}</span>
-              </div>
-            )
-          })}
-        </div>
-        {store.currentNode === CONV_NODES.SLOT_FILLING && totalSlots > 0 && (
-          <div className={styles.slotProgress}>
-            <div className={styles.slotLabel}>{filledCount}/{totalSlots} {t(store.language,'chat.slotProgress')}</div>
-            <div className={styles.slotBar}><div className={styles.slotFill} style={{width:`${slotPct}%`}}/></div>
-          </div>
-        )}
-        {store.applicationNumber && (
-          <div className={styles.appNumBox}>
-            <span className={styles.appNumLabel}>Application</span>
-            <span className={styles.appNum}>{store.applicationNumber}</span>
-          </div>
-        )}
-        {demoMode && (
-          <div className={styles.anomalyBox}>
-            <span className={styles.anomalyLabel}>Risk Score</span>
-            <span className={styles.anomalyValue} style={{color: getAnomalyColor(store.anomalyScore)}}>
-              {store.anomalyScore.toFixed(2)}
-            </span>
-          </div>
-        )}
-        <div className={styles.voiceSection}>
-          <button className={`${styles.voiceModeBtn} ${ivrActive ? styles.active : ''}`} onClick={() => setIvrActive(v => !v)}>
-            <Phone size={14}/> {ivrActive ? 'Hang Up IVR' : 'Dial IVR Call'}
-          </button>
-        </div>
-      </aside>
-
       {/* MIDDLE SECTION: Chat Feed */}
       <div className={styles.chatArea}>
         <header className={styles.chatHeader}>

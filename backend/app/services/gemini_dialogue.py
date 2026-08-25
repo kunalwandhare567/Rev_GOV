@@ -308,14 +308,17 @@ class GeminiDialogueService:
             self._available = False
         return self._available
 
-    def _generate(self, prompt: str, max_tokens: int = 300) -> Optional[str]:
+    def _generate(self, prompt: str, max_tokens: int = 100) -> Optional[str]:
         """Call Gemini and return text, or None on any failure."""
         if not self._model:
             return None
         try:
+            from app.core.config import settings
+            max_limit = getattr(settings, "LLM_MAX_TOKENS", 100)
+            tokens = min(max_tokens, max_limit)
             response = self._model.generate_content(
                 prompt,
-                generation_config={"max_output_tokens": max_tokens, "temperature": 0.4},
+                generation_config={"max_output_tokens": tokens, "temperature": 0.4},
             )
             text = response.text.strip()
             return text if text else None

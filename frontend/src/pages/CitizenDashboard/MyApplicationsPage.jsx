@@ -1,127 +1,322 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import toast from 'react-hot-toast'
 import { applicationsApi } from '../../api/applications'
+import { documentsApi } from '../../api/documents'
 import useAuthStore from '../../store/authStore'
+import { useRightPanel } from '../../layouts/RightPanelContext'
+import {
+  getStatusUI, FILTER_GROUPS, TIMELINE_STAGES, getTimelineState, SERVICE_ICONS
+} from '../../utils/statusMap'
 import styles from './MyApplicationsPage.module.css'
 
-const STATUS_CONFIG = {
-  SUBMITTED:                   { label: 'Submitted',       cls: 'progress', accent: '#006b55' },
-  SUBMITTED_FOR_VERIFICATION:  { label: 'In Verification', cls: 'progress', accent: '#006b55' },
-  PENDING_OFFICER_PRE_APPROVAL:{ label: 'Under Review',    cls: 'progress', accent: '#006b55' },
-  UNDER_REVIEW:                { label: 'Under Review',    cls: 'progress', accent: '#006b55' },
-  CLARIFICATION_REQUIRED:      { label: 'Action Required', cls: 'warning',  accent: '#D99A00' },
-  PAYMENT_PENDING:             { label: 'Action Required', cls: 'warning',  accent: '#D99A00' },
-  APPROVED:                    { label: 'Approved',        cls: 'success',  accent: '#198754' },
-  CERTIFICATE_READY:           { label: 'Ready',           cls: 'success',  accent: '#198754' },
-  COMPLETED:                   { label: 'Completed',       cls: 'success',  accent: '#198754' },
-  REJECTED:                    { label: 'Rejected',        cls: 'rejected', accent: '#D64545' },
-}
-
-const FILTERS = ['All', 'In Progress', 'Completed', 'Rejected']
-
-const SERVICE_ICONS = {
-  income_certificate:   'badge',
-  caste_certificate:    'verified',
-  obc_ncl_certificate:  'groups',
-  domicile_certificate: 'home_work',
-}
-
-function getFilteredApps(apps, filter) {
-  if (filter === 'All') return apps
-  if (filter === 'In Progress') return apps.filter(a =>
-    ['SUBMITTED','SUBMITTED_FOR_VERIFICATION','PENDING_OFFICER_PRE_APPROVAL','UNDER_REVIEW','PAYMENT_PENDING','CLARIFICATION_REQUIRED'].includes(a.status)
-  )
-  if (filter === 'Completed') return apps.filter(a =>
-    ['APPROVED','CERTIFICATE_READY','COMPLETED'].includes(a.status)
-  )
-  if (filter === 'Rejected') return apps.filter(a => a.status === 'REJECTED')
-  return apps
-}
-
+/* ── Timeline Steps (horizontal, scrollable on mobile) ── */
 function TimelineSteps({ status }) {
-  const steps = [
-    { key: 'submitted', label: 'Application Submitted', done: true },
-    { key: 'verified',  label: 'Documents Verified',
-      done: ['SUBMITTED_FOR_VERIFICATION','PENDING_OFFICER_PRE_APPROVAL','UNDER_REVIEW','APPROVED','CERTIFICATE_READY','COMPLETED'].includes(status) },
-    { key: 'review',    label: 'Officer Review',
-      current: ['PENDING_OFFICER_PRE_APPROVAL','UNDER_REVIEW'].includes(status),
-      done: ['APPROVED','CERTIFICATE_READY','COMPLETED'].includes(status) },
-    { key: 'approval',  label: 'Final Approval',
-      done: ['APPROVED','CERTIFICATE_READY','COMPLETED'].includes(status) },
-  ]
   return (
     <div className={styles.timeline}>
-      {steps.map((step, i) => (
-        <div key={step.key} className={styles.timelineStep}>
-          {i < steps.length - 1 && (
-            <div className={`${styles.timelineLine} ${step.done ? styles.lineActive : ''}`} />
-          )}
-          <div className={`${styles.timelineDot} ${step.done ? styles.dotDone : step.current ? styles.dotCurrent : styles.dotPending}`}>
-            {step.done
-              ? <span className="material-symbols-outlined" style={{ fontSize: '16px', fontVariationSettings: "'FILL' 1" }}>check</span>
-              : step.current
-              ? <div className={styles.dotPulse} />
-              : <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>hourglass_empty</span>
-            }
+      {TIMELINE_STAGES.map((stage, i) => {
+        const state = getTimelineState(stage, status)
+        return (
+          <div key={stage.key} className={styles.timelineItem}>
+            <div className={`${styles.timelineDot} ${styles[`dot_${state}`]}`}>
+              {state === 'done' ? (
+                <span className="material-symbols-outlined" style={{ fontSize: 14, fontVariationSettings: "'FILL' 1" }}>check</span>
+              ) : state === 'active' ? (
+                <div className={styles.dotPulse} />
+              ) : (
+                <div className={styles.dotEmpty} />
+              )}
+            </div>
+            <div className={styles.timelineLabel}>
+              <span className={`${styles.timelineLabelText} ${styles[`lbl_${state}`]}`}>{stage.label}</span>
+            </div>
+            {i < TIMELINE_STAGES.length - 1 && (
+              <div className={`${styles.timelineLine} ${state === 'done' ? styles.lineActive : ''}`} />
+            )}
           </div>
-          <div className={styles.timelineLabel}>
-            <span className={`${styles.timelineLabelText} ${step.current ? styles.labelCurrent : step.done ? styles.labelDone : styles.labelPending}`}>
-              {step.label}
-            </span>
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
+/* ── Application Detail Right Panel ── */
+function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
+  const navigate = useNavigate()
+
+  const { data: fields = {}, isLoading: fieldsLoading } = useQuery({
+    queryKey: ['fields', app.id],
+    queryFn:  () => documentsApi.getFields(app.id),
+    enabled:  !!app.id,
+  })
+  const { data: documents = [], isLoading: docsLoading } = useQuery({
+    queryKey: ['documents', app.id],
+    queryFn:  () => documentsApi.getDocuments(app.id),
+    enabled:  !!app.id,
+  })
+  const { data: readiness } = useQuery({
+    queryKey: ['readiness', app.application_number],
+    queryFn:  () => documentsApi.getReadiness(app.application_number),
+    enabled:  !!app.application_number,
+  })
+
+  const statusUI = getStatusUI(app.status)
+  const hasMismatches = documents.some(d => d.mismatch_fields?.length > 0)
+  const allResolved   = documents.every(d => !d.mismatch_fields?.length || d.mismatch_fields.every(f => d.mismatch_resolutions?.[f]))
+  const canSubmit     = app.status === 'FINAL_REVIEW' && allResolved && (readiness?.can_submit || readiness?.score >= 65)
+
+  return (
+    <div className={styles.detailPanel}>
+      {/* Header */}
+      <div className={styles.detailPanelHead}>
+        <div className={styles.detailPanelService}>{app.service_name || app.service_id}</div>
+        <span className={`status-chip chip-${statusUI.color}`}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>{statusUI.icon}</span>
+          {statusUI.label}
+        </span>
+        <div className={styles.detailPanelNum}>#{app.application_number}</div>
+      </div>
+
+      {/* Progress bar */}
+      {app.progress_percent != null && (
+        <div className={styles.detailProgress}>
+          <div className={styles.detailProgressBar}>
+            <div className={styles.detailProgressFill} style={{ width: `${app.progress_percent}%` }} />
+          </div>
+          <span className={styles.detailProgressLabel}>{app.progress_percent}% complete</span>
+        </div>
+      )}
+
+      {/* Readiness score */}
+      {readiness && (
+        <div className={styles.readinessBox}>
+          <div className={styles.readinessScore} style={{
+            color: readiness.score >= 75 ? 'var(--rg-success)' : readiness.score >= 50 ? 'var(--rg-warning)' : 'var(--rg-error)'
+          }}>
+            {readiness.score}/100
+          </div>
+          <div className={styles.readinessLabel}>Readiness Score</div>
+          {readiness.blocking_issues?.length > 0 && (
+            <div className={styles.readinessIssues}>
+              {readiness.blocking_issues.slice(0, 2).map((issue, i) => (
+                <div key={i} className={styles.readinessIssue}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 14, color: 'var(--rg-error)' }}>error</span>
+                  {issue}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Applicant fields */}
+      <div className={styles.detailSection}>
+        <div className={styles.detailSectionTitle}>Applicant Information</div>
+        {fieldsLoading ? (
+          <div className={styles.detailLoading}>Loading fields…</div>
+        ) : Object.keys(fields).length === 0 ? (
+          <p className={styles.detailEmpty}>No fields collected yet. Continue in the Assistant.</p>
+        ) : (
+          <div className={styles.detailFields}>
+            {Object.entries(fields).slice(0, 6).map(([name, data]) => {
+              const val = typeof data === 'object' ? data.value : data
+              const isSensitive = ['aadhaar', 'pan', 'account'].some(k => name.toLowerCase().includes(k))
+              return (
+                <div key={name} className={styles.detailField}>
+                  <span className={styles.detailFieldLabel}>{name.replace(/_/g, ' ')}</span>
+                  <span className={styles.detailFieldValue}>
+                    {isSensitive ? `${String(val || '').slice(0, 4)}••••` : (val || '—')}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Documents summary */}
+      <div className={styles.detailSection}>
+        <div className={styles.detailSectionTitle}>Required Documents</div>
+        {docsLoading ? (
+          <div className={styles.detailLoading}>Loading documents…</div>
+        ) : documents.length === 0 ? (
+          <p className={styles.detailEmpty}>No documents uploaded yet.</p>
+        ) : (
+          <div className={styles.detailDocs}>
+            {documents.map(doc => {
+              const hasMismatch = doc.mismatch_fields?.length > 0
+              const resolved    = hasMismatch && doc.mismatch_fields.every(f => doc.mismatch_resolutions?.[f])
+              return (
+                <div key={doc.id} className={styles.detailDoc}>
+                  <span className="material-symbols-outlined" style={{
+                    fontSize: 18,
+                    color: doc.verification_status === 'VERIFIED' ? 'var(--rg-success)'
+                         : hasMismatch && !resolved ? 'var(--rg-warning)'
+                         : 'var(--rg-outline)',
+                    fontVariationSettings: "'FILL' 1",
+                  }}>
+                    {doc.verification_status === 'VERIFIED' ? 'check_circle'
+                     : hasMismatch && !resolved ? 'warning'
+                     : 'description'}
+                  </span>
+                  <div className={styles.detailDocInfo}>
+                    <span className={styles.detailDocName}>{doc.doc_type?.replace(/_/g, ' ')}</span>
+                    {doc.overall_match_score != null && (
+                      <span className={styles.detailDocScore}>OCR: {Math.round(doc.overall_match_score)}%</span>
+                    )}
+                  </div>
+                  <button
+                    className={styles.viewOCRBtn}
+                    onClick={() => onViewDocs(app.id, doc.id)}
+                  >
+                    View →
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Action buttons */}
+      <div className={styles.detailActions}>
+        {canSubmit && (
+          <button
+            className={styles.submitBtn}
+            onClick={onSubmit}
+            disabled={submitting}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>send</span>
+            {submitting ? 'Submitting…' : 'Send for Verification'}
+          </button>
+        )}
+        {(app.status === 'APPROVED' || app.status === 'CERTIFICATE_READY' || app.status === 'COMPLETED') && (
+          <button className={styles.downloadBtn}>
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>download</span>
+            Download Certificate
+          </button>
+        )}
+        <button
+          className={styles.assistBtn}
+          onClick={() => navigate('/assistant')}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>smart_toy</span>
+          Continue in Assistant
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ── Main Page ── */
 export default function MyApplicationsPage() {
-  const navigate  = useNavigate()
+  const navigate     = useNavigate()
+  const queryClient  = useQueryClient()
   const { citizenUser } = useAuthStore()
-  const [applications, setApplications] = useState([])
-  const [loading, setLoading]     = useState(true)
-  const [error, setError]         = useState('')
-  const [filter, setFilter]       = useState('All')
-  const [expanded, setExpanded]   = useState(null)
+  const { setRightPanel, clearRightPanel } = useRightPanel()
 
-  useEffect(() => { fetchApps() }, [])
+  const [filter,       setFilter]       = useState('All Applications')
+  const [selectedId,   setSelectedId]   = useState(null)
+  const [submitting,   setSubmitting]   = useState(false)
 
-  const fetchApps = async () => {
-    setLoading(true)
-    try {
-      const res = await applicationsApi.getMyApplications()
-      setApplications(res.applications || [])
-    } catch (err) {
-      setError(err.message || 'Failed to load applications.')
-    } finally {
-      setLoading(false)
-    }
-  }
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['myApplications'],
+    queryFn:  () => applicationsApi.getMyApplications(),
+    enabled:  !!citizenUser,
+  })
 
-  const filtered = getFilteredApps(applications, filter)
+  const applications = data?.applications || []
+
+  // Apply filter
+  const activeGroups = FILTER_GROUPS[filter]
+  const filtered = activeGroups
+    ? applications.filter(a => {
+        const ui = getStatusUI(a.status)
+        return activeGroups.includes(ui.group)
+      })
+    : applications
+
+  // Count in-progress
   const inProgressCount = applications.filter(a =>
-    ['SUBMITTED','SUBMITTED_FOR_VERIFICATION','PENDING_OFFICER_PRE_APPROVAL','UNDER_REVIEW','PAYMENT_PENDING'].includes(a.status)
+    ['in_progress', 'action'].includes(getStatusUI(a.status).group)
   ).length
 
-  const formatService = (app) =>
-    (app.service_name || (app.service_type || app.service_id || '').replace(/_/g, ' '))
-      .split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+  // Auto-select first application
+  useEffect(() => {
+    if (applications.length > 0 && !selectedId) {
+      setSelectedId(applications[0].id)
+    }
+  }, [applications])
 
-  const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  const selectedApp = filtered.find(a => a.id === selectedId) || filtered[0] || null
+
+  // View docs navigation
+  const handleViewDocs = useCallback((appId, docId) => {
+    navigate(`/documents?appId=${appId}&docId=${docId}`)
+  }, [navigate])
+
+  // Submit for verification
+  const handleSubmit = useCallback(async () => {
+    if (!selectedApp) return
+    setSubmitting(true)
+    try {
+      await documentsApi.submitForVerification(selectedApp.id)
+      toast.success('Application submitted for verification!')
+      queryClient.invalidateQueries(['myApplications'])
+      queryClient.invalidateQueries(['documents', selectedApp.id])
+      refetch()
+    } catch (err) {
+      toast.error(err.message || 'Submission failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [selectedApp, queryClient, refetch])
+
+  // Inject right panel
+  useEffect(() => {
+    if (selectedApp) {
+      setRightPanel(
+        'Application Details',
+        <ApplicationDetailPanel
+          app={selectedApp}
+          onViewDocs={handleViewDocs}
+          onSubmit={handleSubmit}
+          submitting={submitting}
+        />
+      )
+    } else {
+      clearRightPanel()
+    }
+  }, [selectedApp?.id, submitting])
+
+  useEffect(() => () => clearRightPanel(), [])
+
+  const formatDate = d => d
+    ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : '—'
+
+  const formatService = app =>
+    (app.service_name || (app.service_id || '').replace(/_/g, ' '))
+      .split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
 
   return (
     <div className={styles.page}>
-      {/* ── Page Header ── */}
+      {/* Page Header */}
       <header className={styles.pageHeader}>
         <div>
-          <h2 className={styles.pageTitle}>My Applications</h2>
-          <p className={styles.pageSubtitle}>Track and manage your ongoing requests.</p>
+          <h1 className={styles.pageTitle}>My Applications</h1>
+          <p className={styles.pageSub}>Track and manage your ongoing service requests</p>
         </div>
+        <Link to="/assistant" className={styles.newAppBtn}>
+          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
+          New Application
+        </Link>
       </header>
 
-      {/* ── Filter Pills ── */}
+      {/* Filter Pills */}
       <div className={styles.filterBar}>
-        {FILTERS.map(f => (
+        {Object.keys(FILTER_GROUPS).map(f => (
           <button
             key={f}
             className={`${styles.filterPill} ${filter === f ? styles.pillActive : ''}`}
@@ -135,22 +330,28 @@ export default function MyApplicationsPage() {
         ))}
       </div>
 
-      {/* ── Content ── */}
+      {/* Error */}
       {error && (
         <div className={styles.errorBox}>
           <span className="material-symbols-outlined">error</span>
-          {error}
+          {error.message || 'Failed to load applications.'}
+          <button onClick={() => refetch()}>Retry</button>
         </div>
       )}
 
-      {loading ? (
+      {/* Application List */}
+      {isLoading ? (
         <div className={styles.cardList}>
-          {[1,2,3].map(i => <div key={i} className={`${styles.card} skeleton`} style={{ height: 80 }} />)}
+          {[1,2,3].map(i => (
+            <div key={i} className="skeleton" style={{ height: 120, borderRadius: 20 }} />
+          ))}
         </div>
       ) : filtered.length === 0 ? (
         <div className={styles.emptyState}>
-          <span className="material-symbols-outlined" style={{ fontSize: 48, color: 'var(--rg-outline-variant)' }}>assignment</span>
-          <h4 className={styles.emptyTitle}>No Applications Found</h4>
+          <span className="material-symbols-outlined" style={{ fontSize: 56, color: 'var(--rg-outline-variant)' }}>
+            assignment
+          </span>
+          <h3 className={styles.emptyTitle}>No Applications Found</h3>
           <p className={styles.emptyDesc}>Start a new application via the AI Assistant.</p>
           <Link to="/assistant" className={styles.startBtn}>
             <span className="material-symbols-outlined">add</span>
@@ -159,91 +360,82 @@ export default function MyApplicationsPage() {
         </div>
       ) : (
         <div className={styles.cardList}>
-          {/* First card: expanded with full timeline (like Stitch reference) */}
-          {filtered.map((app, idx) => {
-            const sc = STATUS_CONFIG[app.status] || { label: app.status, cls: 'progress', accent: '#006b55' }
-            const isExp = expanded === app.id || (expanded === null && idx === 0)
-            const icon = SERVICE_ICONS[app.service_type || app.service_id] || 'description'
+          {filtered.map(app => {
+            const statusUI  = getStatusUI(app.status)
+            const icon      = SERVICE_ICONS[app.service_id] || 'description'
+            const isSelected = app.id === selectedId
 
-            return isExp ? (
-              /* ── EXPANDED card ── */
-              <div key={app.id} className={styles.cardExpanded} onClick={() => setExpanded(isExp ? -1 : app.id)}>
-                <div className={styles.cardAccent} style={{ background: sc.accent }} />
-                <div className={styles.cardExpandedInner}>
-                  <div className={styles.cardTopRow}>
-                    <div>
-                      <div className={styles.cardMeta}>
-                        <span className={`${styles.statusBadge} ${styles[sc.cls]}`}>{sc.label}</span>
-                        <span className={styles.appNum}>#{app.application_number}</span>
-                      </div>
-                      <h3 className={styles.cardTitle}>{formatService(app)}</h3>
-                      <p className={styles.cardDate}>Submitted on {formatDate(app.created_at || app.submitted_at)}</p>
-                    </div>
-                    <button className={styles.moreBtn} onClick={(e) => { e.stopPropagation(); navigate(`/applications/${app.application_number}`) }}>
-                      <span className="material-symbols-outlined">more_vert</span>
-                    </button>
-                  </div>
-                  <hr className={styles.divider} />
-                  <TimelineSteps status={app.status} />
-                </div>
-              </div>
-            ) : (
-              /* ── COLLAPSED card ── */
+            return (
               <div
                 key={app.id}
-                className={styles.cardCollapsed}
-                onClick={() => setExpanded(app.id)}
+                className={`${styles.card} ${isSelected ? styles.cardSelected : ''}`}
+                onClick={() => setSelectedId(app.id)}
               >
-                <div className={styles.cardCollapsedLeft}>
-                  <div className={styles.cardIcon}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 22 }}>{icon}</span>
+                {/* Card top */}
+                <div className={styles.cardTop}>
+                  <div className={styles.cardIconWrap}>
+                    <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>
+                      {icon}
+                    </span>
                   </div>
-                  <div>
-                    <h3 className={styles.cardCollapsedTitle}>{formatService(app)}</h3>
-                    <p className={styles.cardCollapsedSub}>#{app.application_number} • {sc.label}</p>
+                  <div className={styles.cardInfo}>
+                    <div className={styles.cardTitle}>{formatService(app)}</div>
+                    <div className={styles.cardMeta}>
+                      #{app.application_number}
+                      {app.submitted_at && ` · Submitted ${formatDate(app.submitted_at)}`}
+                    </div>
                   </div>
-                </div>
-                <div className={styles.cardCollapsedRight}>
-                  <span className={`${styles.statusBadge} ${styles[sc.cls]}`} style={{ display: 'none' }}>{sc.label}</span>
-                  <span
-                    className={styles.statusChip}
-                    style={{ background: sc.cls === 'warning' ? 'rgba(217,154,0,0.12)' : sc.cls === 'success' ? 'rgba(25,135,84,0.10)' : sc.cls === 'rejected' ? 'rgba(214,69,69,0.10)' : 'rgba(0,107,85,0.10)',
-                              color: sc.accent }}
-                  >
-                    {sc.label}
+                  <span className={`status-chip chip-${statusUI.color}`}>
+                    {statusUI.label}
                   </span>
-                  <span className="material-symbols-outlined" style={{ color: 'var(--rg-outline)', fontSize: 20 }}>chevron_right</span>
+                </div>
+
+                {/* Progress bar */}
+                {app.progress_percent != null && (
+                  <div className={styles.cardProgressWrap}>
+                    <div className={styles.cardProgressBar}>
+                      <div
+                        className={styles.cardProgressFill}
+                        style={{
+                          width: `${app.progress_percent}%`,
+                          background: statusUI.color === 'success' ? 'var(--rg-success)'
+                            : statusUI.color === 'warning'  ? 'var(--rg-warning)'
+                            : statusUI.color === 'error'    ? 'var(--rg-error)'
+                            : 'var(--rg-primary)',
+                        }}
+                      />
+                    </div>
+                    <span className={styles.cardProgressPct}>{app.progress_percent}%</span>
+                  </div>
+                )}
+
+                {/* Timeline */}
+                <TimelineSteps status={app.status} />
+
+                {/* Action notice */}
+                {(app.status === 'CLARIFICATION_REQUIRED' || app.status === 'PAYMENT_PENDING') && (
+                  <div className={styles.actionNotice}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--rg-warning)' }}>
+                      warning
+                    </span>
+                    <span>
+                      {app.status === 'PAYMENT_PENDING' ? 'Payment required to proceed' : 'Clarification required'}
+                    </span>
+                  </div>
+                )}
+
+                {/* View details */}
+                <div className={styles.cardFooter}>
+                  <button className={styles.viewBtn} onClick={e => { e.stopPropagation(); setSelectedId(app.id) }}>
+                    View Details
+                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>chevron_right</span>
+                  </button>
                 </div>
               </div>
             )
           })}
         </div>
       )}
-
-      {/* ── Right context panel placeholder ── */}
-      <aside className={styles.rightPanel}>
-        <div className={styles.rightPanelHeader}>
-          <h3 className={styles.rightPanelTitle}>Application Details</h3>
-          {expanded !== null && filtered[0] && (
-            <p className={styles.rightPanelSub}>Context for #{filtered.find(a => a.id === expanded)?.application_number || filtered[0]?.application_number}</p>
-          )}
-        </div>
-
-        {/* Need Assistance */}
-        <div className={styles.assistCard}>
-          <span className="material-symbols-outlined" style={{ color: 'var(--rg-primary)', marginTop: 2 }}>support_agent</span>
-          <div>
-            <p className={styles.assistTitle}>Need assistance?</p>
-            <p className={styles.assistDesc}>Chat with our AI assistant regarding a specific application.</p>
-          </div>
-        </div>
-
-        {/* Upload button */}
-        <Link to="/assistant" className={styles.uploadBtn}>
-          <span className="material-symbols-outlined" style={{ fontSize: 20 }}>cloud_upload</span>
-          Upload Additional Files
-        </Link>
-      </aside>
     </div>
   )
 }

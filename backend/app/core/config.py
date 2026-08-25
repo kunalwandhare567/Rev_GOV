@@ -43,12 +43,13 @@ class Settings(BaseSettings):
     # No automatic fallback between providers.
     # ─────────────────────────────────────────────
     LLM_PROVIDER: str = "openrouter"
+    LLM_MAX_TOKENS: int = 100
 
     # OpenRouter (Primary default — 200+ models via single API key)
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_MODEL: str = "openrouter/auto"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_MAX_TOKENS: int = 1000
+    OPENROUTER_MAX_TOKENS: int = 100
 
     # Gemini (free tier available)
     GEMINI_API_KEY: Optional[str] = None

@@ -69,7 +69,7 @@ export default function LandingPage() {
           </h1>
           <p className={styles.heroSubtitle}>{t(language, 'hero.subtitle')}</p>
           <div className={styles.heroCtas}>
-            <Link to="/chat" className={styles.ctaPrimary}>
+            <Link to="/login" className={styles.ctaPrimary}>
               {t(language, 'hero.cta_apply')} <ArrowRight size={18} />
             </Link>
             <Link to="/status" className={styles.ctaSecondary}>
@@ -119,7 +119,7 @@ export default function LandingPage() {
                     <span className={styles.slaBadge}>{svc.sla_days} {t(language,'services.days')}</span>
                   </div>
                 </div>
-                <Link to={`/chat?service=${svc.id}`} className={styles.serviceApplyBtn}>
+                <Link to={`/login?service=${svc.id}`} className={styles.serviceApplyBtn}>
                   {t(language,'services.applyBtn')} <ChevronRight size={14} />
                 </Link>
               </div>

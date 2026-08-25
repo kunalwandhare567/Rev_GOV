@@ -1,0 +1,182 @@
+/* PublicLayout — top nav only, no sidebar */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--rg-background);
+}
+
+/* ── Top Navigation Bar ── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  height: 64px;
+  background: var(--rg-surface-white);
+  border-bottom: 1px solid var(--rg-outline-variant);
+  box-shadow: 0 1px 4px rgba(23,32,51,0.06);
+  gap: 1rem;
+}
+
+/* Brand */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.brandIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--rg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+}
+.brandIcon .material-symbols-outlined { font-size: 20px; }
+.brandText { display: flex; flex-direction: column; line-height: 1.2; }
+.brandName {
+  font-family: var(--font-display);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--rg-primary);
+}
+.brandTagline {
+  font-size: 0.6875rem;
+  color: var(--rg-text-body);
+  letter-spacing: 0.02em;
+}
+
+/* Right nav */
+.navRight {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+/* Language switcher */
+.langSwitcher {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--rg-surface-container-low);
+  border-radius: 9999px;
+  padding: 0.25rem;
+  border: 1px solid var(--rg-outline-variant);
+}
+.langBtn {
+  padding: 0.3125rem 0.75rem;
+  border-radius: 9999px;
+  border: none;
+  background: none;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--rg-text-body);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.langBtn:hover { background: var(--rg-surface-container); }
+.langActive {
+  background: var(--rg-primary) !important;
+  color: #ffffff !important;
+  font-weight: 600;
+}
+
+/* Auth buttons */
+.loginBtn {
+  padding: 0.5rem 1.25rem;
+  border-radius: 9999px;
+  border: 1.5px solid var(--rg-primary);
+  background: transparent;
+  color: var(--rg-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.loginBtn:hover { background: var(--rg-primary); color: #ffffff; }
+
+.registerBtn, .dashboardBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 9999px;
+  border: none;
+  background: var(--rg-secondary);
+  color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.registerBtn:hover, .dashboardBtn:hover { opacity: 0.9; }
+
+/* Mobile hamburger button */
+.menuBtn {
+  display: none;
+  padding: 0.5rem;
+  border-radius: 50%;
+  color: var(--rg-primary);
+  transition: background 0.15s;
+}
+.menuBtn:hover { background: var(--rg-surface-container-low); }
+
+/* Mobile menu */
+.mobileOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(23,32,51,0.45);
+  z-index: calc(var(--z-sticky) + 1);
+}
+.mobileMenu {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+  background: var(--rg-surface-white);
+  border-bottom: 1px solid var(--rg-outline-variant);
+  z-index: calc(var(--z-sticky) + 2);
+  padding: 1rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-shadow: 0 8px 24px rgba(23,32,51,0.12);
+}
+.mobileLangRow {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.mobileFullBtn {
+  width: 100%;
+  justify-content: center;
+  border-radius: 14px;
+  padding: 0.75rem 1rem;
+}
+
+/* Main content */
+.main { flex: 1; }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 900px) {
+  .topbar { padding: 0 1.25rem; }
+  .langSwitcher { display: none; }
+  .loginBtn, .registerBtn, .dashboardBtn { display: none; }
+  .menuBtn { display: flex; align-items: center; }
+  .brandTagline { display: none; }
+}
+@media (max-width: 640px) {
+  .topbar { height: 56px; padding: 0 1rem; }
+  .brandName { font-size: 0.9375rem; }
+}

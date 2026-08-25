@@ -7,6 +7,7 @@ export const applicationsApi = {
   getMyApplications: ()      => client.get('/applications/my-applications'),
   getCitizenApps: (id)       => client.get(`/applications/citizen/${id}`),
   getRecent:    (limit = 20) => client.get(`/applications/recent?limit=${limit}`),
+  getById:      (id)         => client.get(`/applications/${id}`),
   updateStatus: (appNum, status, note = '') =>
     client.patch(`/applications/status/${appNum}`, { status, note }),
   validateEligibility: (serviceId, slots) =>

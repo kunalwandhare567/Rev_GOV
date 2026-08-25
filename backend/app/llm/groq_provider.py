@@ -70,6 +70,7 @@ class GroqProvider(LLMProvider):
             "model": self._model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": getattr(settings, "LLM_MAX_TOKENS", 100),
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
