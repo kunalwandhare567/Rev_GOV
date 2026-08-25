@@ -13,10 +13,21 @@ class CitizenRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def create(self, preferred_language: str = "en",
-               preferred_channel: str = "WEB") -> Citizen:
+    def _next_citizen_id(self) -> str:
+        """Generate formatted sequential citizen ID: CIT-001, CIT-002, etc."""
+        count = self.db.query(Citizen).count()
+        seq = count + 1
+        return f"CIT-{seq:03d}"
+
+    def create(self, name: str = None, phone: str = None, email: str = None, address: str = None,
+               preferred_language: str = "en", preferred_channel: str = "WEB") -> Citizen:
+        citizen_ref = self._next_citizen_id()
         citizen = Citizen(
-            citizen_ref=f"CIT-{str(uuid.uuid4())[:12].upper()}",
+            citizen_ref=citizen_ref,
+            name=name,
+            phone=phone,
+            email=email,
+            address=address,
             preferred_language=preferred_language,
             preferred_channel=preferred_channel,
         )
@@ -25,11 +36,33 @@ class CitizenRepository:
         self.db.refresh(citizen)
         return citizen
 
+    def update_profile(self, citizen_ref: str, name: str = None, phone: str = None,
+                       email: str = None, address: str = None) -> Citizen | None:
+        c = self.get_by_ref(citizen_ref)
+        if c:
+            if name is not None: c.name = name
+            if phone is not None: c.phone = phone
+            if email is not None: c.email = email
+            if address is not None: c.address = address
+            c.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(c)
+        return c
+
     def get_by_ref(self, citizen_ref: str) -> Citizen | None:
         return self.db.query(Citizen).filter(Citizen.citizen_ref == citizen_ref).first()
 
     def get_by_identifier(self, identifier: str) -> Citizen | None:
-        """Look up citizen by normalized identifier hash via ChannelIdentity."""
+        """Look up citizen by normalized identifier hash via ChannelIdentity or direct email/phone."""
+        if not identifier:
+            return None
+        # Try direct match first if phone or email
+        direct = self.db.query(Citizen).filter(
+            (Citizen.phone == identifier) | (Citizen.email == identifier) | (Citizen.citizen_ref == identifier)
+        ).first()
+        if direct:
+            return direct
+
         from app.models.db_models import ChannelIdentity
         h = self._hash(self._normalize(identifier))
         ci = self.db.query(ChannelIdentity).filter(ChannelIdentity.identifier_hash == h).first()
@@ -39,7 +72,7 @@ class CitizenRepository:
 
     def resolve_or_create(self, identifier: str = None, language: str = "en",
                           raw_identifier: str = None, preferred_language: str = None,
-                          preferred_channel: str = None) -> Citizen:
+                          preferred_channel: str = None, name: str = None) -> Citizen:
         """
         Get-or-create citizen by any channel identifier.
         Normalizes 'whatsapp:XXXX' → 'XXXX' before hashing.
@@ -52,17 +85,19 @@ class CitizenRepository:
         h = self._hash(normalized)
         channel = preferred_channel or ("WHATSAPP" if ident.lower().startswith("whatsapp:") else "WEB")
 
-        # Look up by identity hash
-        ci = self.db.query(ChannelIdentity).filter(ChannelIdentity.identifier_hash == h).first()
-        if ci:
-            citizen = self.get_by_ref(ci.citizen_ref)
-            if citizen and preferred_channel and citizen.preferred_channel != preferred_channel:
+        # Look up by identity hash or direct phone/email
+        citizen = self.get_by_identifier(ident)
+        if citizen:
+            if preferred_channel and citizen.preferred_channel != preferred_channel:
                 self.update_channel(citizen.citizen_ref, preferred_channel)
             return citizen
 
         # Create new citizen
         citizen = Citizen(
-            citizen_ref=f"CIT-{str(uuid.uuid4())[:12].upper()}",
+            citizen_ref=self._next_citizen_id(),
+            name=name,
+            phone=normalized if "@" not in normalized and normalized.replace("+", "").isdigit() else None,
+            email=normalized if "@" in normalized else None,
             preferred_language=lang,
             preferred_channel=channel,
         )

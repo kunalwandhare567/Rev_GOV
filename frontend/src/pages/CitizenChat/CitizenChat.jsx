@@ -5,7 +5,9 @@ import { Send, Mic, RefreshCw, Globe, Plus, Paperclip, CheckCircle, XCircle, Ale
 import ReactMarkdown from 'react-markdown'
 import useChatStore from '../../store/chatStore'
 import useUIStore from '../../store/uiStore'
+import useAuthStore from '../../store/authStore'
 import { conversationApi } from '../../api/conversation'
+import { applicationsApi } from '../../api/applications'
 import { t, LANGUAGE_NAMES } from '../../i18n'
 import { CONV_NODES, NODE_STEPS, FRAUD_THRESHOLDS, SUPPORTED_LANGS, APP_STATUS } from '../../utils/constants'
 import styles from './CitizenChat.module.css'
@@ -74,14 +76,18 @@ export default function CitizenChat() {
   const preselectedService = searchParams.get('service')
   const store = useChatStore()
   const { demoMode } = useUIStore()
+  const { isCitizenAuthenticated, citizenUser } = useAuthStore()
+
+  // Auto-resolve citizen identifier from auth store
+  const resolvedId = citizenUser?.citizen_id || citizenUser?.email || citizenUser?.phone || store.citizenIdentifier || ''
 
   const [inputText, setInputText] = useState('')
   const [showLangMenu, setShowLangMenu] = useState(false)
   const [showResume, setShowResume] = useState(false)
-  const [citizenId, setCitizenId] = useState(store.citizenIdentifier || '')
-  const [idSet, setIdSet] = useState(!!store.citizenIdentifier)
+  const [citizenId, setCitizenId] = useState(resolvedId)
+  const [idSet, setIdSet] = useState(isCitizenAuthenticated || !!resolvedId)
   const [showDocSelector, setShowDocSelector] = useState(false)
-  const [activeRightTab, setActiveRightTab] = useState('form') // form | docs | payment | track
+  const [activeRightTab, setActiveRightTab] = useState('form')
   
   // Voice & STT/TTS States
   const [isListening, setIsListening] = useState(false)
@@ -108,6 +114,17 @@ export default function CitizenChat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [store.messages, store.isTyping])
+
+  // Auto-set identifier from auth when authenticated
+  useEffect(() => {
+    if (isCitizenAuthenticated && resolvedId && !store.citizenIdentifier) {
+      store.setCitizenIdentifier(resolvedId)
+    }
+    if (isCitizenAuthenticated && !idSet) {
+      setIdSet(true)
+      if (resolvedId) setCitizenId(resolvedId)
+    }
+  }, [isCitizenAuthenticated, resolvedId])
 
   // Fetch initial session state
   useEffect(() => {
@@ -262,6 +279,32 @@ export default function CitizenChat() {
     }
   }
 
+  const formatAppStatusMessage = (app) => {
+    if (!app) return ''
+    const statusBadges = {
+      APPROVED: '🎉 APPROVED',
+      REJECTED: '❌ REJECTED',
+      UNDER_REVIEW: '📋 UNDER REVIEW',
+      SUBMITTED: '✅ SUBMITTED',
+      SUBMITTED_FOR_VERIFICATION: '🔍 IN VERIFICATION',
+      CERTIFICATE_READY: '📜 CERTIFICATE READY',
+      PENDING_OFFICER_PRE_APPROVAL: '⏳ PENDING OFFICER APPROVAL',
+      PAYMENT_PENDING: '💳 PAYMENT PENDING',
+    }
+    const badge = statusBadges[app.status] || `📌 ${app.status}`
+    return (
+      `🔍 **Application Status Details**\n\n` +
+      `• **Application No:** \`${app.application_number}\`\n` +
+      `• **Service:** ${app.service_name || (app.service_type || '').replace(/_/g, ' ').toUpperCase()}\n` +
+      `• **Status:** **${badge}**\n` +
+      `• **Payment Status:** \`${app.payment_status || 'PENDING'}\`\n` +
+      `• **Language:** ${(app.language || 'en').toUpperCase()}\n` +
+      `• **SLA:** ${app.sla_days ? `${app.sla_days} working days` : '3 working days'}\n` +
+      (app.submitted_at ? `• **Submitted At:** ${new Date(app.submitted_at).toLocaleString()}\n` : '') +
+      (app.created_at ? `• **Created At:** ${new Date(app.created_at).toLocaleString()}\n` : '')
+    )
+  }
+
   const sendMessage = useCallback(async (text) => {
     if (!text?.trim() || store.isTyping) return
     const msgText = text.trim()
@@ -269,6 +312,26 @@ export default function CitizenChat() {
 
     store.addMessage({ role: 'USER', content: msgText, language: store.language })
     store.setTyping(true)
+
+    // Check if the message contains an application tracking ID pattern (e.g. APP-IC-2026-XXXXXX)
+    const appMatch = msgText.match(/APP-[A-Z0-9-]+/i)
+    if (appMatch) {
+      const appNum = appMatch[0].toUpperCase()
+      try {
+        const data = await applicationsApi.getStatus(appNum)
+        const app = data?.application
+        if (app) {
+          setTrackedApp(app)
+          setSearchAppNum(appNum)
+          setActiveRightTab('track')
+          const statusMsg = formatAppStatusMessage(app)
+          store.addMessage({ role: 'ASSISTANT', content: statusMsg, language: store.language })
+          return
+        }
+      } catch (err) {
+        // Fall back to conversationApi if direct lookup fails
+      }
+    }
 
     try {
       const resp = await conversationApi.sendMessage(
@@ -385,13 +448,24 @@ export default function CitizenChat() {
   const handleSearchStatus = async (e) => {
     e.preventDefault()
     if (!searchAppNum.trim()) return
+    const appNum = searchAppNum.trim()
     try {
-      const data = await applicationsApi.getStatus(searchAppNum.trim())
-      setTrackedApp(data?.application)
-      toast.success('Status retrieved!')
+      const data = await applicationsApi.getStatus(appNum)
+      const app = data?.application
+      if (app) {
+        setTrackedApp(app)
+        toast.success('Status retrieved!')
+        const statusMsg = formatAppStatusMessage(app)
+        store.addMessage({ role: 'ASSISTANT', content: statusMsg, language: store.language })
+      }
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || 'Application not found')
       setTrackedApp(null)
+      store.addMessage({
+        role: 'ASSISTANT',
+        content: `❌ No application found for tracking ID: \`${appNum}\`. Please verify the tracking number and try again.`,
+        language: store.language
+      })
     }
   }
 
@@ -405,13 +479,15 @@ export default function CitizenChat() {
     return (
       <div className={styles.idGate}>
         <div className={styles.idCard}>
-          <div className={styles.idIcon}>🏛️</div>
-          <h2 className={styles.idTitle}>Welcome to RevenueSeva</h2>
-          <p className={styles.idSub}>Enter a unique identifier to start (e.g. your mobile number or email)</p>
+          <div className={styles.idIcon}>
+            <span className="material-symbols-outlined" style={{ fontSize: 40, color: 'var(--rg-primary)' }}>account_balance</span>
+          </div>
+          <h2 className={styles.idTitle}>Welcome to RevenueGov</h2>
+          <p className={styles.idSub}>Enter your mobile number or email to start</p>
           <form onSubmit={handleSetId} className={styles.idForm}>
-            <input className={styles.idInput} placeholder="e.g. 9876543210" value={citizenId}
+            <input className={styles.idInput} placeholder="Mobile number or email" value={citizenId}
               onChange={e => setCitizenId(e.target.value)} required />
-            <button className={styles.idBtn} type="submit">Start →</button>
+            <button className={styles.idBtn} type="submit">Start</button>
           </form>
           <p className={styles.idNote}>Your identity is tokenized — we never store raw identifiers.</p>
         </div>
@@ -467,10 +543,15 @@ export default function CitizenChat() {
       <div className={styles.chatArea}>
         <header className={styles.chatHeader}>
           <div className={styles.chatTitle}>
-            <span className={styles.chatBot}>🤖</span>
+            <div className={styles.chatBot}>
+              <span className="material-symbols-outlined" style={{ fontSize: 20 }}>support_agent</span>
+            </div>
             <div>
-              <div className={styles.chatName}>RevenueSeva Assistant</div>
-              <div className={styles.chatStatus}>{store.isConnected ? '🟢 Connected' : '⚪ Connecting…'}</div>
+              <div className={styles.chatName}>RevenueGov Assistant</div>
+              <div className={styles.chatStatus}>
+                <span className={styles.statusDot} style={{ background: store.isConnected ? 'var(--rg-secondary)' : 'var(--rg-outline)' }} />
+                {store.isConnected ? 'Online' : 'Connecting…'}
+              </div>
             </div>
           </div>
           <div className={styles.chatHeaderActions}>
@@ -490,7 +571,7 @@ export default function CitizenChat() {
                 </div>
               )}
             </div>
-            <button className={styles.resetBtn} onClick={() => { store.reset(); setIdSet(false); setCitizenId('') }} title="Start over">
+            <button className={styles.resetBtn} onClick={() => { store.reset() }} title="Start new conversation">
               <RefreshCw size={16}/>
             </button>
           </div>
@@ -517,8 +598,11 @@ export default function CitizenChat() {
         <div className={styles.messages}>
           {store.messages.length === 0 && !store.isTyping && (
             <div className={styles.emptyState}>
-              <div className={styles.emptyIcon}>💬</div>
-              <p>Start by saying <b>"Hello"</b> or choose a service below</p>
+              <div className={styles.emptyIcon}>
+                <span className="material-symbols-outlined" style={{ fontSize: 48, color: 'var(--rg-outline-variant)' }}>chat</span>
+              </div>
+              <p style={{ fontWeight: 600, color: 'var(--rg-text-heading)', marginBottom: 4 }}>How can I help you today?</p>
+              <p style={{ fontSize: '0.875rem' }}>Start by saying <b>"Hello"</b> or choose a service below</p>
               <div className={styles.quickServices}>
                 {Object.entries(SERVICE_LABELS).map(([id, names]) => (
                   <button key={id} className={styles.quickSvcBtn} onClick={() => sendMessage(names[store.language] || names.en)}>
@@ -531,7 +615,11 @@ export default function CitizenChat() {
 
           {store.messages.map((msg) => (
             <div key={msg.id} className={`${styles.msgRow} ${msg.role === 'USER' ? styles.userRow : styles.assistantRow}`}>
-              {msg.role === 'ASSISTANT' && <div className={styles.avatar}>🤖</div>}
+              {msg.role === 'ASSISTANT' && (
+                <div className={styles.avatar}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>support_agent</span>
+                </div>
+              )}
               <div className={`${styles.bubble} ${msg.role === 'USER' ? styles.userBubble : styles.assistantBubble}`}>
                 <ReactMarkdown>{msg.content}</ReactMarkdown>
                 {msg.audioUrl && (
@@ -548,7 +636,9 @@ export default function CitizenChat() {
 
           {store.isTyping && (
             <div className={`${styles.msgRow} ${styles.assistantRow}`}>
-              <div className={styles.avatar}>🤖</div>
+              <div className={styles.avatar}>
+                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>support_agent</span>
+              </div>
               <div className={`${styles.bubble} ${styles.assistantBubble} ${styles.typingBubble}`}>
                 <span className={styles.tdot}/><span className={styles.tdot}/><span className={styles.tdot}/>
               </div>

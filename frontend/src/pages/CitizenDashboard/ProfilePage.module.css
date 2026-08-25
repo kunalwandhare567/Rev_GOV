@@ -1,0 +1,185 @@
+/* ProfilePage — Stitch Reference */
+
+.page {
+  background: var(--rg-background);
+  min-height: 100%;
+  padding: 2rem;
+}
+
+/* Page header */
+.pageHeader  { margin-bottom: 2rem; }
+.pageTitle   { font-family: var(--font-display); font-size: 2rem; font-weight: 600; color: var(--rg-text-heading); letter-spacing: -0.01em; }
+.pageSubtitle{ font-size: 1rem; color: var(--rg-text-body); margin-top: 0.25rem; }
+
+.content {
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* ── Profile card ── */
+.profileCard {
+  background: var(--rg-surface-white);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 20px;
+  padding: 2rem;
+  box-shadow: 0 4px 20px rgba(23,32,51,0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Avatar */
+.avatarRow {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+.avatarLg {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--rg-primary-container);
+  color: var(--rg-on-primary-cont);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.profileName {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--rg-text-heading);
+}
+.citizenIdBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  background: rgba(0,53,95,0.08);
+  color: var(--rg-primary);
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Status messages */
+.statusMsg {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.75rem 1rem; border-radius: 12px;
+  font-size: 0.875rem; font-weight: 500;
+}
+.statusSuccess { background: rgba(25,135,84,0.08); color: var(--rg-success); }
+.statusError   { background: rgba(214,69,69,0.08); color: var(--rg-error); }
+
+.loadingRow {
+  display: flex; align-items: center; justify-content: center;
+  padding: 2rem;
+}
+
+/* Bento grid */
+.bentoGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+.bentoCell {
+  background: var(--rg-surface-container-low);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 16px;
+  padding: 1rem;
+}
+.bentoCellFull { grid-column: 1 / -1; }
+.bentoCellHeader {
+  display: flex; align-items: center; gap: 0.375rem;
+  margin-bottom: 0.5rem;
+}
+.bentoCellLabel {
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--rg-text-body);
+}
+.bentoCellValue {
+  font-size: 0.9375rem; font-weight: 600; color: var(--rg-text-heading);
+  word-break: break-word;
+}
+
+/* Actions */
+.actions {
+  display: flex; gap: 0.75rem; flex-wrap: wrap;
+}
+.editBtn {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.625rem 1.25rem;
+  background: var(--rg-secondary); color: var(--rg-on-secondary);
+  border-radius: 12px; font-size: 0.875rem; font-weight: 600;
+  border: none; cursor: pointer; transition: opacity 0.18s;
+}
+.editBtn:hover { opacity: 0.9; }
+.appsBtn {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.625rem 1.25rem;
+  background: var(--rg-surface-container); color: var(--rg-text-heading);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 12px; font-size: 0.875rem; font-weight: 600;
+  text-decoration: none; transition: background 0.18s;
+}
+.appsBtn:hover { background: var(--rg-surface-container-high); }
+.cancelBtn {
+  padding: 0.625rem 1.25rem;
+  background: none; color: var(--rg-on-surface-variant);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 12px; font-size: 0.875rem; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.cancelBtn:hover { background: var(--rg-surface-container-low); }
+
+/* Edit form */
+.editForm { display: flex; flex-direction: column; gap: 1rem; }
+.formField { display: flex; flex-direction: column; gap: 0.375rem; }
+.formLabel { font-size: 0.75rem; font-weight: 600; color: var(--rg-text-body); text-transform: uppercase; letter-spacing: 0.04em; }
+.formInput {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--rg-outline-variant); border-radius: 10px;
+  font-size: 0.9375rem; color: var(--rg-text-heading);
+  background: var(--rg-surface-container-low);
+  transition: border-color 0.15s;
+}
+.formInput:focus { border-color: var(--rg-primary); outline: none; box-shadow: 0 0 0 3px rgba(0,53,95,0.08); }
+
+/* Section title */
+.sectionTitle {
+  font-family: var(--font-display);
+  font-size: 1.125rem; font-weight: 600;
+  color: var(--rg-text-heading); margin-bottom: 1rem;
+}
+
+/* Identities card */
+.identitiesCard {
+  background: var(--rg-surface-white);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 20px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 20px rgba(23,32,51,0.04);
+}
+.identityList { display: flex; flex-direction: column; gap: 0.75rem; }
+.identityItem {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--rg-surface-container-low);
+  border: 1px solid var(--rg-outline-variant);
+  border-radius: 12px;
+}
+.identityIcon {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--rg-primary-container); color: var(--rg-on-primary-cont);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.identityChannel { font-size: 0.875rem; font-weight: 600; color: var(--rg-text-heading); }
+.identityType    { font-size: 0.75rem; color: var(--rg-text-body); margin-top: 1px; }

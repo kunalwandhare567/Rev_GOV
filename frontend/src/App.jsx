@@ -8,6 +8,11 @@ import CitizenChat        from './pages/CitizenChat/CitizenChat'
 import StatusTracker      from './pages/StatusTracker/StatusTracker'
 import ServiceCatalogue   from './pages/ServiceCatalogue/ServiceCatalogue'
 
+// ── CITIZEN DASHBOARD PAGES ──
+import ProfilePage            from './pages/CitizenDashboard/ProfilePage'
+import MyApplicationsPage     from './pages/CitizenDashboard/MyApplicationsPage'
+import ApplicationDetailsPage  from './pages/CitizenDashboard/ApplicationDetailsPage'
+
 // ── OMNICHANNEL PAGES ──
 import WhatsAppChat       from './pages/WhatsAppChat/WhatsAppChat'
 import IVRSimulator       from './pages/IVRSimulator/IVRSimulator'
@@ -19,24 +24,24 @@ import AdminDashboard  from './pages/AdminDashboard/AdminDashboard'
 import DataGuardDemo   from './pages/DataGuardDemo/DataGuardDemo'
 import AuditLog        from './pages/AuditLog/AuditLog'
 
-// ── CITIZEN DASHBOARD (NEW) ──
-// ApplicationReviewPage: 4-section web form (Phase 11)
-// lazy load to keep bundle small
-
-// Phase 10: Officer persona REMOVED.
-// OfficerLogin and OfficerReview pages are no longer imported or routed.
-// Admin absorbs all review functions via AdminDashboard.
-
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* ── CITIZEN PORTAL (with layout) ── */}
+        {/* ── CITIZEN PORTAL (PUBLIC) ── */}
         <Route element={<CitizenLayout />}>
           <Route path="/"         element={<LandingPage />} />
-          <Route path="/chat"     element={<CitizenChat />} />
           <Route path="/status"   element={<StatusTracker />} />
           <Route path="/services" element={<ServiceCatalogue />} />
+        </Route>
+
+        {/* ── PROTECTED CITIZEN DASHBOARD ── */}
+        <Route element={<AuthGuard requiredRole="CITIZEN"><CitizenLayout /></AuthGuard>}>
+          <Route path="/assistant"       element={<CitizenChat />} />
+          <Route path="/chat"            element={<CitizenChat />} />
+          <Route path="/profile"         element={<ProfilePage />} />
+          <Route path="/applications"    element={<MyApplicationsPage />} />
+          <Route path="/applications/:id" element={<ApplicationDetailsPage />} />
         </Route>
 
         {/* ── STANDALONE CHANNEL UIs (no layout wrapper) ── */}

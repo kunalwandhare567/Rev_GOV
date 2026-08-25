@@ -34,16 +34,19 @@ def _now():
 # ─────────────────────────────────────────────
 
 class User(Base):
-    """System users: officers, admins, auditors."""
+    """System users: officers, admins, auditors, citizens."""
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=_uuid)
     username = Column(String(64), unique=True, nullable=False, index=True)
     hashed_password = Column(String(256), nullable=False)
     role = Column(String(32), nullable=False, default="CITIZEN")  # CITIZEN | OFFICER | ADMIN | AUDITOR
+    citizen_ref = Column(String(64), ForeignKey("citizens.citizen_ref"), nullable=True, index=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
+
+    citizen = relationship("Citizen", foreign_keys=[citizen_ref])
 
 
 # ─────────────────────────────────────────────
@@ -73,19 +76,24 @@ class ChannelIdentity(Base):
 
 
 # ─────────────────────────────────────────────
-# CITIZENS (tokenized — no raw PII in this row)
+# CITIZENS
 # ─────────────────────────────────────────────
 
 class Citizen(Base):
     """
-    Citizen registry. citizen_ref is a tokenized identifier.
-    Raw PII (name, Aadhaar, phone) is stored ENCRYPTED in ApplicationData.
-    Identity linkage via ChannelIdentity table (hashed identifiers only).
+    Citizen registry. citizen_ref is a tokenized identifier (e.g. CIT-001).
+    Identity linkage via ChannelIdentity table (hashed identifiers).
     """
     __tablename__ = "citizens"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    citizen_ref = Column(String(64), unique=True, nullable=False, index=True)  # Token, not raw ID
+    citizen_ref = Column(String(64), unique=True, nullable=False, index=True)  # e.g. CIT-001
+
+    name = Column(String(128), nullable=True)
+    phone = Column(String(32), nullable=True, index=True)
+    email = Column(String(128), nullable=True, index=True)
+    address = Column(Text, nullable=True)
+
     preferred_language = Column(String(8), default="en")
     preferred_channel = Column(String(32), default="WEB")
     literacy_level = Column(String(16), default="MEDIUM")  # LOW | MEDIUM | HIGH
@@ -100,6 +108,10 @@ class Citizen(Base):
     applications = relationship("Application", back_populates="citizen")
     sessions = relationship("ConversationSession", back_populates="citizen")
     channel_identities = relationship("ChannelIdentity", back_populates="citizen")
+
+    @property
+    def citizen_id(self) -> str:
+        return self.citizen_ref
 
 
 # ─────────────────────────────────────────────

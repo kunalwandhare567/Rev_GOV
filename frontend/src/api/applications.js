@@ -4,6 +4,7 @@ export const applicationsApi = {
   listServices: ()           => client.get('/applications/services'),
   getService:   (id)         => client.get(`/applications/services/${id}`),
   getStatus:    (appNum)     => client.get(`/applications/status/${appNum}`),
+  getMyApplications: ()      => client.get('/applications/my-applications'),
   getCitizenApps: (id)       => client.get(`/applications/citizen/${id}`),
   getRecent:    (limit = 20) => client.get(`/applications/recent?limit=${limit}`),
   updateStatus: (appNum, status, note = '') =>

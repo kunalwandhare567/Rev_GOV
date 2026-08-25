@@ -26,21 +26,25 @@ class CitizenResolver:
     def resolve(self, *, whatsapp_number: str = None, phone: str = None,
                 email: str = None) -> Citizen | None:
         """
-        Find citizen by any identifier.
-        Returns None if not found — use create_or_resolve() to create.
+        Find citizen by any identifier across Web, WhatsApp, IVR, Email.
+        Returns None if not found.
         """
-        if whatsapp_number:
-            citizen = self.channel_id_repo.find_citizen_by_identifier("WHATSAPP", whatsapp_number)
-            if citizen:
-                return citizen
-
-        if phone:
-            citizen = self.channel_id_repo.find_citizen_by_identifier("IVR", phone)
+        target_phone = whatsapp_number or phone
+        if target_phone:
+            # 1. Try ChannelIdentity lookup for WHATSAPP and IVR
+            citizen = (
+                self.channel_id_repo.find_citizen_by_identifier("WHATSAPP", target_phone)
+                or self.channel_id_repo.find_citizen_by_identifier("IVR", target_phone)
+                or self.citizen_repo.get_by_identifier(target_phone)
+            )
             if citizen:
                 return citizen
 
         if email:
-            citizen = self.channel_id_repo.find_citizen_by_identifier("EMAIL", email)
+            citizen = (
+                self.channel_id_repo.find_citizen_by_identifier("EMAIL", email)
+                or self.citizen_repo.get_by_identifier(email)
+            )
             if citizen:
                 return citizen
 

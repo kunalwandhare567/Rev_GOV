@@ -34,6 +34,24 @@ class ChannelIdentityRepository:
     def create(self, citizen_ref: str, channel: str, identifier: str,
                identifier_type: str, verified: bool = True) -> ChannelIdentity:
         h = _hash(identifier)
+        existing = (
+            self.db.query(ChannelIdentity)
+            .filter(
+                ChannelIdentity.channel == channel,
+                ChannelIdentity.identifier_hash == h,
+            )
+            .first()
+        )
+        if existing:
+            existing.citizen_ref = citizen_ref
+            existing.identifier_type = identifier_type
+            existing.verified = verified
+            if verified and not existing.verified_at:
+                existing.verified_at = datetime.datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
         ci = ChannelIdentity(
             citizen_ref=citizen_ref,
             channel=channel,

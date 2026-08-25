@@ -150,18 +150,49 @@ def admin_doc_decision(req: AdminDocDecisionRequest, db: Session = Depends(get_d
     }
 
 
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+from jose import jwt, JWTError
+
+def _resolve_citizen_from_req(request: Request, raw_identifier: str, db: Session, language: str = "en", channel: str = "WEB"):
+    """
+    Resolves citizen using Bearer JWT token if available.
+    Does NOT trust citizen_identifier supplied by frontend if token is provided.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            citizen_ref = payload.get("citizen_ref")
+            if citizen_ref:
+                citizen_repo = CitizenRepository(db)
+                citizen = citizen_repo.get_by_ref(citizen_ref)
+                if citizen:
+                    return citizen
+        except JWTError:
+            pass
+
+    citizen_repo = CitizenRepository(db)
+    return citizen_repo.resolve_or_create(
+        raw_identifier=raw_identifier,
+        preferred_language=language,
+        preferred_channel=channel,
+    )
+
+
 @router.post("/message")
-def send_message(req: MessageRequest, db: Session = Depends(get_db)):
+def send_message(req: MessageRequest, request: Request, db: Session = Depends(get_db)):
     """
     Main chat endpoint. Process a citizen's message through the conversation pipeline.
     Handles intent detection, slot filling, validation, payment, submission.
     """
-    # Resolve citizen_ref (tokenized, never stores raw identifier)
-    citizen_repo = CitizenRepository(db)
-    citizen = citizen_repo.resolve_or_create(
+    # Authenticated token takes precedence over frontend body parameter
+    citizen = _resolve_citizen_from_req(
+        request,
         raw_identifier=req.citizen_identifier,
-        preferred_language=req.language,
-        preferred_channel=req.channel,
+        db=db,
+        language=req.language,
+        channel=req.channel,
     )
 
     # Process through state machine
@@ -221,6 +252,7 @@ def send_message(req: MessageRequest, db: Session = Depends(get_db)):
 
 @router.post("/document-upload")
 async def upload_document(
+    request: Request,
     citizen_identifier: str = Form(...),
     doc_type: str = Form(...),
     channel: str = Form(default="WEB"),
@@ -231,8 +263,7 @@ async def upload_document(
     Handle document upload. Performs local mock OCR extraction.
     Actual file stored locally (not cloud). Cross-reference performed locally.
     """
-    citizen_repo = CitizenRepository(db)
-    citizen = citizen_repo.resolve_or_create(raw_identifier=citizen_identifier, preferred_channel=channel)
+    citizen = _resolve_citizen_from_req(request, raw_identifier=citizen_identifier, db=db, channel=channel)
 
     file_ref = "mock://document/no-file"
 
@@ -573,10 +604,9 @@ def switch_channel(req: ChannelSwitchRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/session/{citizen_identifier}")
-def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
+def get_session(citizen_identifier: str, request: Request, db: Session = Depends(get_db)):
     """Get current session state for a citizen."""
-    citizen_repo = CitizenRepository(db)
-    citizen = citizen_repo.resolve_or_create(citizen_identifier)
+    citizen = _resolve_citizen_from_req(request, raw_identifier=citizen_identifier, db=db)
 
     from app.data_layer.repositories.session_repo import SessionRepository
     session = SessionRepository(db).load_session(citizen.citizen_ref)

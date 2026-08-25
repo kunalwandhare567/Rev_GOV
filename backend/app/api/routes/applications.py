@@ -47,13 +47,58 @@ def get_service(service_id: str):
     }
 
 
-@router.get("/status/{application_number}")
-def get_application_status(application_number: str, db: Session = Depends(get_db)):
-    """Check status of a specific application by application number."""
+from app.api.routes.auth import get_current_citizen
+from app.core.security import verify_application_ownership
+
+@router.get("/my-applications")
+def get_my_applications(
+    current_citizen = Depends(get_current_citizen),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all applications belonging ONLY to the authenticated citizen.
+    Backend authorization is strictly enforced.
+    """
     repo = ApplicationRepository(db)
-    app = repo.get_by_number(application_number)
+    apps = repo.get_by_citizen(current_citizen.citizen_ref, limit=50)
+
+    return {
+        "status": "ok",
+        "citizen_id": current_citizen.citizen_ref,
+        "count": len(apps),
+        "applications": [
+            {
+                "id": a.id,
+                "application_number": a.application_number,
+                "tracking_id": a.tracking_id,
+                "service_id": a.service_id,
+                "service_name": a.service.name_en if a.service else a.service_id,
+                "status": a.status,
+                "progress_percent": a.progress_percent,
+                "payment_status": a.payment_status,
+                "channel_origin": a.channel_origin,
+                "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in apps
+        ]
+    }
+
+
+@router.get("/status/{application_number}")
+def get_application_status(
+    application_number: str,
+    current_citizen = Depends(get_current_citizen),
+    db: Session = Depends(get_db),
+):
+    """Check status of a specific application by application number with ownership verification."""
+    repo = ApplicationRepository(db)
+    app = repo.get_by_number(application_number) or repo.get_by_id(application_number)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    # Enforce backend authorization: citizen can only view their own application
+    verify_application_ownership(app.id, current_citizen.citizen_ref, db)
 
     cert = None
     if app.certificate:
@@ -68,26 +113,27 @@ def get_application_status(application_number: str, db: Session = Depends(get_db
         "application": {
             "id":                 app.id,
             "application_number": app.application_number,
-            "service_type":   app.service_id,   # service_id is the service type key
-            "service_name":   app.service.name_en if app.service else None,
-            "sla_days":       app.service.sla_days if app.service else None,
-            "status":         app.status,
-            "payment_status": app.payment_status,
-            "fee_paid_amount": (app.payments[0].amount if app.payments else None),
-            "fee_waiver":     False,
-            "payment_reference": (app.payments[0].transaction_id if app.payments else None),
-            "channel":        app.channel_origin,
-            "language":       app.language,
-            "consent_given":  app.consent_given,
-            "anomaly_score":  app.anomaly_score,
-            "literacy_level": None,
-            "citizen_ref":    app.citizen_ref,
-            "slots_data":     slots_data,
-            "submitted_at":   app.submitted_at.isoformat() if app.submitted_at else None,
-            "completed_at":   app.completed_at.isoformat() if app.completed_at else None,
-            "created_at":     app.created_at.isoformat(),
-            "certificate":    cert,
-            "documents":      [
+            "tracking_id":        app.tracking_id,
+            "service_type":       app.service_id,   # service_id is the service type key
+            "service_name":       app.service.name_en if app.service else None,
+            "sla_days":           app.service.sla_days if app.service else None,
+            "status":             app.status,
+            "payment_status":     app.payment_status,
+            "fee_paid_amount":    (app.payments[0].amount if app.payments else None),
+            "fee_waiver":         False,
+            "payment_reference":  (app.payments[0].transaction_id if app.payments else None),
+            "channel":            app.channel_origin,
+            "language":           app.language,
+            "consent_given":      app.consent_given,
+            "anomaly_score":      app.anomaly_score,
+            "literacy_level":     None,
+            "citizen_ref":        app.citizen_ref,
+            "slots_data":         slots_data,
+            "submitted_at":       app.submitted_at.isoformat() if app.submitted_at else None,
+            "completed_at":       app.completed_at.isoformat() if app.completed_at else None,
+            "created_at":         app.created_at.isoformat(),
+            "certificate":        cert,
+            "documents":          [
                 {
                     "id": d.id,
                     "doc_type": d.doc_type,
@@ -108,25 +154,33 @@ def get_application_status(application_number: str, db: Session = Depends(get_db
     }
 
 
-
 @router.get("/citizen/{citizen_identifier}")
 def get_citizen_applications(
     citizen_identifier: str,
     limit: int = Query(default=10, ge=1, le=50),
+    current_citizen = Depends(get_current_citizen),
     db: Session = Depends(get_db),
 ):
-    """Get all applications for a citizen."""
+    """Get all applications for a citizen with authorization guard."""
     citizen_repo = CitizenRepository(db)
-    citizen = citizen_repo.resolve_or_create(citizen_identifier)
+    target_citizen = citizen_repo.get_by_identifier(citizen_identifier) or citizen_repo.get_by_ref(citizen_identifier)
+    
+    if not target_citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+        
+    if target_citizen.citizen_ref != current_citizen.citizen_ref:
+        raise HTTPException(status_code=403, detail="Forbidden: You cannot access another citizen's applications.")
+
     app_repo = ApplicationRepository(db)
-    apps = app_repo.get_by_citizen(citizen.citizen_ref, limit=limit)
+    apps = app_repo.get_by_citizen(target_citizen.citizen_ref, limit=limit)
 
     return {
-        "citizen_ref": citizen.citizen_ref,
+        "citizen_ref": target_citizen.citizen_ref,
         "count": len(apps),
         "applications": [
             {
                 "application_number": a.application_number,
+                "tracking_id": a.tracking_id,
                 "service_id": a.service_id,
                 "status": a.status,
                 "payment_status": a.payment_status,

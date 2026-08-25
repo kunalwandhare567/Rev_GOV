@@ -145,7 +145,7 @@ def verify_application_ownership(
 
     from app.data_layer.repositories.application_repo import ApplicationRepository
     repo = ApplicationRepository(db)
-    app = repo.get_by_id(application_id)
+    app = repo.get_by_id(application_id) or repo.get_by_number(application_id)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
     if app.citizen_ref != citizen_ref:

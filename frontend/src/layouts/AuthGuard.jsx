@@ -3,7 +3,14 @@ import useAuthStore from '../store/authStore'
 import { ROLES } from '../utils/constants'
 
 export default function AuthGuard({ children, requiredRole }) {
-  const { isAuthenticated, user } = useAuthStore()
+  const { isAuthenticated, isCitizenAuthenticated, user } = useAuthStore()
+
+  if (requiredRole === 'CITIZEN') {
+    if (!isCitizenAuthenticated && !user) {
+      return <Navigate to="/" replace />
+    }
+    return children
+  }
 
   if (!isAuthenticated || !user) {
     const loginPath = requiredRole === ROLES.ADMIN ? '/admin/login' : '/officer/login'
