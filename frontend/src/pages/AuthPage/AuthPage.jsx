@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import useAuthStore from '../../store/authStore'
+import useChatStore from '../../store/chatStore'
 import { loginCitizen, registerCitizen } from '../../api/auth'
 import styles from './AuthPage.module.css'
 
@@ -29,6 +30,7 @@ export default function AuthPage() {
     setError('')
     setLoading(true)
     try {
+      useChatStore.getState().reset()
       if (tab === 'login') {
         const res = await loginCitizen({ identifier, password })
         setCitizenAuth(res.access_token, {

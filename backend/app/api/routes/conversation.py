@@ -635,19 +635,32 @@ def _format_document_dict(d) -> dict:
 
 
 @router.get("/session/{citizen_identifier}")
-def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
+def get_session(citizen_identifier: str, request: Request, db: Session = Depends(get_db)):
     """Retrieve active session state for a citizen, auto-recovering if necessary."""
     from app.services.citizen_resolver import CitizenResolver
     from app.data_layer.repositories.session_repo import SessionRepository
+    from app.data_layer.repositories.application_repo import ApplicationRepository
 
-    citizen_ref = CitizenResolver.resolve_citizen_ref(citizen_identifier, db=db)
+    citizen = _resolve_citizen_from_req(request, raw_identifier=citizen_identifier, db=db)
+    citizen_ref = citizen.citizen_ref
+
     session_repo = SessionRepository(db)
     session = session_repo.get_or_recover_session(citizen_ref)
     if not session:
-        return {"status": "inactive", "message": "No active application session found."}
+        return {
+            "status": "inactive",
+            "message": "No active application session found.",
+            "citizen_ref": citizen_ref,
+        }
 
-    citizen_repo = CitizenRepository(db)
-    citizen = citizen_repo.get(session.citizen_ref) or citizen_repo.resolve_or_create(session.citizen_ref)
+    # Consistency check: session.citizen_ref must match citizen.citizen_ref
+    if session.citizen_ref != citizen_ref:
+        logger.warning(f"Session citizen_ref mismatch: {session.citizen_ref} vs {citizen_ref}")
+        return {
+            "status": "inactive",
+            "message": "Session citizen mismatch.",
+            "citizen_ref": citizen_ref,
+        }
 
     app_num = None
     service_id = None
@@ -656,15 +669,19 @@ def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
     payment_status = session.payment_status
 
     if session.application_id:
-        from app.data_layer.repositories.application_repo import ApplicationRepository
         app_repo = ApplicationRepository(db)
         app = app_repo.get_by_id(session.application_id)
-        if app:
+        if app and app.citizen_ref == citizen_ref:
             app_num = app.application_number
             service_id = app.service_id
             anomaly_score = app.anomaly_score
             payment_status = app.payment_status
             documents = [_format_document_dict(d) for d in (app.documents or [])]
+        elif app and app.citizen_ref != citizen_ref:
+            logger.warning(f"Application {session.application_id} does not belong to citizen {citizen_ref}. Dissociating.")
+            session.application_id = None
+            session_repo.save_session(session)
+            db.commit()
 
     return {
         "status": "active",
@@ -673,8 +690,8 @@ def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
         "current_node": session.current_node,
         "channel": session.channel,
         "language": session.language,
-        "filled_slots": session.filled_slots,
-        "missing_slots": session.missing_slots,
+        "filled_slots": session.filled_slots or {},
+        "missing_slots": session.missing_slots or [],
         "payment_status": payment_status,
         "consent_given": session.consent_given,
         "expires_at": session.expires_at.isoformat() if session.expires_at else None,

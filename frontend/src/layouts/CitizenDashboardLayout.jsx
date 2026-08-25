@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import useAuthStore from '../store/authStore'
+import useChatStore from '../store/chatStore'
 import { RightPanelProvider, useRightPanel } from './RightPanelContext'
 import styles from './CitizenDashboardLayout.module.css'
 
@@ -51,6 +52,7 @@ function DashboardShell() {
 
   const handleLogout = () => {
     clearCitizenAuth()
+    useChatStore.getState().reset()
     navigate('/')
   }
 

@@ -29,20 +29,32 @@ router = APIRouter(prefix="/applications", tags=["applications-v2"])
 def _verify_app_access(request: Request, app_citizen_ref: str):
     """Verify that citizen accessing this application is the owner (or admin/officer)."""
     auth_header = request.headers.get("Authorization", "")
+    token = None
     if auth_header.startswith("Bearer "):
         token = auth_header.replace("Bearer ", "").strip()
-        try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-            role = payload.get("role")
-            if role in ("ADMIN", "OFFICER", "admin", "officer"):
-                return
-            token_citizen_ref = payload.get("citizen_ref")
-            if token_citizen_ref and token_citizen_ref != app_citizen_ref:
+    elif request.query_params.get("token"):
+        token = request.query_params.get("token")
+
+    if not token:
+        header_citizen = request.headers.get("X-Citizen-Ref")
+        if header_citizen:
+            if header_citizen != app_citizen_ref:
                 raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this application.")
-        except HTTPException:
-            raise
-        except JWTError:
-            pass
+            return
+        return
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    role = (payload.get("role") or "").upper()
+    if role in ("ADMIN", "OFFICER"):
+        return
+
+    token_citizen_ref = payload.get("citizen_ref")
+    if token_citizen_ref and token_citizen_ref != app_citizen_ref:
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this application.")
 
 
 @router.get("/{application_id}")
@@ -149,6 +161,33 @@ def get_documents(application_id: str, request: Request, db: Session = Depends(g
     ]
 
 
+@router.get("/{application_id}/documents/{doc_id}/image")
+def get_document_image(
+    application_id: str,
+    doc_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Get document image/file with ownership validation."""
+    from fastapi.responses import FileResponse, Response
+    app_repo = ApplicationRepository(db)
+    app = app_repo.get_by_id(application_id) or app_repo.get_by_number(application_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    _verify_app_access(request, app.citizen_ref)
+
+    doc_repo = DocumentRepository(db)
+    doc = doc_repo.get(doc_id)
+    if not doc or doc.application_id != app.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.file_ref and os.path.exists(doc.file_ref):
+        return FileResponse(doc.file_ref)
+    
+    return Response(content=b"%PDF-1.4\n% Document placeholder", media_type="application/pdf")
+
+
 @router.get("/{application_id}/fields")
 def get_application_fields(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Get all fields with provenance metadata."""
@@ -160,7 +199,6 @@ def get_application_fields(application_id: str, request: Request, db: Session = 
     _verify_app_access(request, app.citizen_ref)
 
     fields_with_provenance = repo.get_fields_with_provenance(app.id)
-    # Convert to dict keyed by field_name
     return {
         f["field_name"]: {
             "value": f["value"],
@@ -185,16 +223,19 @@ def update_field(
     application_id: str,
     field_name: str,
     body: FieldUpdateRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Update a single field (with provenance tracking)."""
     repo = ApplicationRepository(db)
-    app = repo.get_by_id(application_id)
+    app = repo.get_by_id(application_id) or repo.get_by_number(application_id)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
 
+    _verify_app_access(request, app.citizen_ref)
+
     repo.save_field(
-        application_id=application_id,
+        application_id=app.id,
         field_name=field_name,
         field_value=body.value,
         source=body.source,
@@ -203,7 +244,7 @@ def update_field(
 
     event_repo = EventRepository(db)
     event_repo.create_event(
-        application_id=application_id,
+        application_id=app.id,
         citizen_ref=app.citizen_ref,
         event_type=EventType.FIELD_UPDATED.value,
         source_channel="WEB",
@@ -224,26 +265,30 @@ def resolve_mismatch(
     application_id: str,
     doc_id: str,
     body: MismatchResolveRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Resolve a field mismatch between OCR data and application data."""
     doc_repo = DocumentRepository(db)
     app_repo = ApplicationRepository(db)
 
+    app = app_repo.get_by_id(application_id) or app_repo.get_by_number(application_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    _verify_app_access(request, app.citizen_ref)
+
     doc = doc_repo.get(doc_id)
-    if not doc or doc.application_id != application_id:
+    if not doc or doc.application_id != app.id:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Resolve in document
     doc_repo.resolve_mismatch(doc_id, body.field, body.resolution)
 
-    # If USE_OCR, update the application field with OCR value
     if body.resolution == "USE_OCR":
         ocr_value = (doc.extracted_fields or {}).get(body.field)
         if ocr_value:
-            app = app_repo.get_by_id(application_id)
             app_repo.save_field(
-                application_id=application_id,
+                application_id=app.id,
                 field_name=body.field,
                 field_value=str(ocr_value),
                 source="OCR_RESOLUTION",
@@ -251,21 +296,18 @@ def resolve_mismatch(
             )
 
     elif body.resolution == "MANUAL" and body.manual_value:
-        app = app_repo.get_by_id(application_id)
         app_repo.save_field(
-            application_id=application_id,
+            application_id=app.id,
             field_name=body.field,
             field_value=body.manual_value,
             source="MANUAL_RESOLUTION",
             confirmed=True,
         )
 
-    # Record event
-    app = app_repo.get_by_id(application_id)
     event_repo = EventRepository(db)
     event_repo.create_event(
-        application_id=application_id,
-        citizen_ref=app.citizen_ref if app else "",
+        application_id=app.id,
+        citizen_ref=app.citizen_ref,
         event_type=EventType.MISMATCH_RESOLVED.value,
         source_channel="WEB",
         event_data={"doc_id": doc_id, "field": body.field, "resolution": body.resolution},
@@ -281,12 +323,14 @@ def resolve_mismatch(
 
 
 @router.post("/{application_id}/submit")
-def submit_for_verification(application_id: str, db: Session = Depends(get_db)):
+def submit_for_verification(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Submit application for government verification."""
     repo = ApplicationRepository(db)
-    app = repo.get_by_id(application_id)
+    app = repo.get_by_id(application_id) or repo.get_by_number(application_id)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    _verify_app_access(request, app.citizen_ref)
 
     if app.status not in ("FINAL_REVIEW", "OCR_VALIDATION", "DOCUMENT_COLLECTION"):
         raise HTTPException(
@@ -294,13 +338,13 @@ def submit_for_verification(application_id: str, db: Session = Depends(get_db)):
             detail=f"Cannot submit application in status: {app.status}"
         )
 
-    repo.update_status(application_id, "SUBMITTED_FOR_VERIFICATION")
-    repo.update_progress(application_id, 70, "SUBMITTED_FOR_VERIFICATION")
-    repo.update_last_channel(application_id, "WEB")
+    repo.update_status(app.id, "SUBMITTED_FOR_VERIFICATION")
+    repo.update_progress(app.id, 70, "SUBMITTED_FOR_VERIFICATION")
+    repo.update_last_channel(app.id, "WEB")
 
     event_repo = EventRepository(db)
     event_repo.create_event(
-        application_id=application_id,
+        application_id=app.id,
         citizen_ref=app.citizen_ref,
         event_type=EventType.SUBMITTED_FOR_VERIFICATION.value,
         source_channel="WEB",

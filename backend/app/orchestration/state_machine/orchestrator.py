@@ -79,7 +79,16 @@ class ConversationOrchestrator:
         Includes citizen identity, active application meta, filled fields,
         pending slot, OCR data, and recent conversation turns.
         """
-        app = self.app_repo.get_by_id(session.application_id) if session.application_id else None
+        app = None
+        if session.application_id:
+            fetched = self.app_repo.get_by_id(session.application_id)
+            if fetched and fetched.citizen_ref == session.citizen_ref:
+                app = fetched
+            elif fetched:
+                logger.warning(f"Session {session.id} had cross-citizen application {session.application_id}. Clearing.")
+                session.application_id = None
+                self.session_repo.save_session(session)
+                self.db.commit()
         spec = ServiceSpecLoader.get(app.service_id) if app else None
 
         # Load recent message history (last 8 messages)

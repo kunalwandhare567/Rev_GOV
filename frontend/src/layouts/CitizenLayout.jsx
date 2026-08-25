@@ -53,6 +53,7 @@ export default function CitizenLayout() {
 
   const handleLogout = () => {
     clearCitizenAuth()
+    useChatStore.getState().reset()
     navigate('/')
   }
 

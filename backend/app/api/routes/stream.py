@@ -11,7 +11,7 @@ import json
 import logging
 import datetime
 from typing import AsyncGenerator, Dict, Set
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -136,6 +136,30 @@ async def application_events_stream(
       - Payment completed
       - Officer acts on the application
     """
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+    elif request.query_params.get("token"):
+        token = request.query_params.get("token")
+
+    if token:
+        try:
+            from jose import jwt
+            from app.core.config import settings
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            role = (payload.get("role") or "").upper()
+            token_citizen = payload.get("citizen_ref")
+            if role not in ("ADMIN", "OFFICER"):
+                app_repo = ApplicationRepository(db)
+                app = app_repo.get_by_id(application_id) or app_repo.get_by_number(application_id)
+                if app and token_citizen and app.citizen_ref != token_citizen:
+                    raise HTTPException(status_code=403, detail="Forbidden: You do not own this application.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     q = bus.subscribe(application_id)
 
     async def cleanup_on_disconnect():
@@ -254,6 +278,27 @@ async def citizen_events_stream(
       - 'Clarification required'
     Frontend subscribes on login with citizen_ref.
     """
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+    elif request.query_params.get("token"):
+        token = request.query_params.get("token")
+
+    if token:
+        try:
+            from jose import jwt
+            from app.core.config import settings
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            role = (payload.get("role") or "").upper()
+            token_citizen = payload.get("citizen_ref")
+            if role not in ("ADMIN", "OFFICER") and token_citizen and token_citizen != citizen_ref:
+                raise HTTPException(status_code=403, detail="Forbidden: You cannot subscribe to another citizen's events.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     q = bus.subscribe(citizen_ref)
 
     return StreamingResponse(

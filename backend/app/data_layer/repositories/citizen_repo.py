@@ -18,9 +18,17 @@ class CitizenRepository:
         self.db = db
 
     def _next_citizen_id(self) -> str:
-        """Generate formatted sequential citizen ID: CIT-001, CIT-002, etc."""
-        count = self.db.query(Citizen).count()
-        seq = count + 1
+        """Generate formatted sequential citizen ID: CIT-001, CIT-002, etc. Ensures uniqueness."""
+        all_refs = [r[0] for r in self.db.query(Citizen.citizen_ref).all() if r[0] and r[0].startswith("CIT-")]
+        max_num = 0
+        for r in all_refs:
+            try:
+                num = int(r.split("-")[1])
+                if num > max_num:
+                    max_num = num
+            except (ValueError, IndexError):
+                pass
+        seq = max_num + 1
         return f"CIT-{seq:03d}"
 
     def create(self, name: str = None, phone: str = None, email: str = None, address: str = None,

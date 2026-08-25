@@ -345,13 +345,28 @@ def update_application_status(
 
 
 @router.get("/{id_or_number}/certificate")
-def download_application_certificate(id_or_number: str, db: Session = Depends(get_db)):
+def download_application_certificate(id_or_number: str, request: Request, db: Session = Depends(get_db)):
     """Download official issued certificate PDF."""
     from fastapi.responses import FileResponse
     repo = ApplicationRepository(db)
     app = repo.get_by_id(id_or_number) or repo.get_by_number(id_or_number) or repo.get_by_tracking_id(id_or_number)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            role = (payload.get("role") or "").upper()
+            token_citizen = payload.get("citizen_ref")
+            if role not in ("ADMIN", "OFFICER") and token_citizen and token_citizen != app.citizen_ref:
+                raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this certificate.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     if not app.certificate or not app.certificate.file_ref or not os.path.exists(app.certificate.file_ref):
         from app.services.certificate_service import CertificateService
         svc = CertificateService(db)
@@ -436,6 +451,7 @@ def validate_eligibility_endpoint(
 @router.get("/{application_number}/readiness")
 def get_application_readiness(
     application_number: str,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -455,9 +471,23 @@ def get_application_readiness(
     from app.rules_engine.engine import EligibilityChecker
 
     repo = ApplicationRepository(db)
-    app = repo.get_by_number(application_number)
+    app = repo.get_by_number(application_number) or repo.get_by_id(application_number) or repo.get_by_tracking_id(application_number)
     if not app:
         raise HTTPException(status_code=404, detail=f"Application '{application_number}' not found")
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            role = (payload.get("role") or "").upper()
+            token_citizen = payload.get("citizen_ref")
+            if role not in ("ADMIN", "OFFICER") and token_citizen and token_citizen != app.citizen_ref:
+                raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this application.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     service_id = getattr(app, "service_id", None)
     filled_slots = dict(getattr(app, "submitted_data", None) or {})

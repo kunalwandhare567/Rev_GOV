@@ -50,15 +50,27 @@ def _gen_application_number(service_id: str) -> str:
 
 
 def _gen_tracking_id(service_id: str, db: Session) -> str:
-    """Generate unique tracking ID: e.g. INC-2026-000001"""
+    """Generate unique tracking ID: e.g. INC-2026-000001 with collision avoidance."""
     prefix = SERVICE_TRACKING_PREFIXES.get(service_id, "APP")
     year = datetime.datetime.utcnow().year
-    # Count apps of this service this year for sequential numbering
-    count = db.query(Application).filter(
-        Application.service_id == service_id,
-        Application.tracking_id.isnot(None),
-    ).count()
-    seq = count + 1
+    
+    existing = db.query(Application.tracking_id).filter(
+        Application.tracking_id.like(f"{prefix}-{year}-%")
+    ).all()
+    
+    max_seq = 0
+    for row in existing:
+        t_id = row[0]
+        if t_id:
+            try:
+                seq_part = t_id.split("-")[-1]
+                num = int(seq_part)
+                if num > max_seq:
+                    max_seq = num
+            except (ValueError, IndexError):
+                pass
+                
+    seq = max_seq + 1
     return f"{prefix}-{year}-{seq:06d}"
 
 

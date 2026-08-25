@@ -29,6 +29,14 @@ const useAuthStore = create(
       setCitizenAuth: (token, citizenUser) => {
         localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token)
         localStorage.setItem(STORAGE_KEYS.AUTH_USER, JSON.stringify(citizenUser))
+        
+        // Purge old user session and chat store state
+        localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+        localStorage.removeItem(STORAGE_KEYS.CITIZEN_IDENTIFIER)
+        if (citizenUser?.citizen_id) {
+          localStorage.setItem(STORAGE_KEYS.CITIZEN_IDENTIFIER, citizenUser.citizen_id)
+        }
+
         set({
           token,
           user: citizenUser,
@@ -51,6 +59,8 @@ const useAuthStore = create(
       clearCitizenAuth: () => {
         localStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN)
         localStorage.removeItem(STORAGE_KEYS.AUTH_USER)
+        localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+        localStorage.removeItem(STORAGE_KEYS.CITIZEN_IDENTIFIER)
         set({
           token: null,
           user: null,

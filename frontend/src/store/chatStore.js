@@ -45,6 +45,32 @@ const useChatStore = create((set, get) => ({
     })),
   syncFromResponse: (resp) => {
     if (!resp) return
+    
+    // If citizenRef changed, do clean wipe
+    if (resp.citizen_ref && get().citizenRef && resp.citizen_ref !== get().citizenRef) {
+      get().reset()
+    }
+
+    if (resp.status === 'inactive' || resp.status === 'no_active_session') {
+      localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+      set({
+        sessionId: null,
+        citizenRef: resp.citizen_ref || get().citizenRef,
+        currentNode: CONV_NODES.INIT,
+        consentGiven: false,
+        paymentStatus: 'PENDING',
+        anomalyScore: 0.0,
+        applicationNumber: null,
+        serviceType: null,
+        filledSlots: {},
+        missingSlots: [],
+        validationErrors: [],
+        messages: [],
+        documents: [],
+      })
+      return
+    }
+
     const sessionId = resp.session_id || get().sessionId
     if (sessionId) localStorage.setItem(STORAGE_KEYS.SESSION_ID, sessionId)
     set({
@@ -56,11 +82,11 @@ const useChatStore = create((set, get) => ({
       consentGiven:     resp.consent_given    ?? get().consentGiven,
       paymentStatus:    resp.payment_status   ?? get().paymentStatus,
       anomalyScore:     resp.anomaly_score    ?? get().anomalyScore,
-      filledSlots:      resp.filled_slots     ?? get().filledSlots,
-      missingSlots:     resp.missing_slots    ?? get().missingSlots,
-      validationErrors: resp.validation_errors ?? get().validationErrors,
-      applicationNumber:resp.application_number ?? get().applicationNumber,
-      serviceType:      resp.service_type     ?? (resp.extra_data?.service_type ?? get().serviceType),
+      filledSlots:      resp.filled_slots     ?? {},
+      missingSlots:     resp.missing_slots    ?? [],
+      validationErrors: resp.validation_errors ?? [],
+      applicationNumber:resp.application_number ?? null,
+      serviceType:      resp.service_type     ?? (resp.extra_data?.service_type ?? null),
       documents: resp.documents ? (
         (() => {
           const map = new Map()
@@ -70,7 +96,7 @@ const useChatStore = create((set, get) => ({
           }
           return Array.from(map.values())
         })()
-      ) : get().documents,
+      ) : [],
       isConnected: true,
     })
   },
@@ -160,7 +186,9 @@ const useChatStore = create((set, get) => ({
   },
   reset: () => {
     localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+    localStorage.removeItem(STORAGE_KEYS.CITIZEN_IDENTIFIER)
     set({
+      citizenIdentifier: null,
       citizenRef: null,
       sessionId: null,
       currentNode: CONV_NODES.INIT,
@@ -176,6 +204,7 @@ const useChatStore = create((set, get) => ({
       messages: [],
       isTyping: false,
       documents: [],
+      isConnected: false,
     })
   },
 }))

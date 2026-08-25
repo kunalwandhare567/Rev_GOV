@@ -68,8 +68,15 @@ class SessionRepository:
         session = self.load_session(citizen_ref)
         if session:
             if application_id and session.application_id != application_id:
-                session.application_id = application_id
-                self.save_session(session)
+                app_check = self.db.query(Application).filter(Application.id == application_id, Application.citizen_ref == citizen_ref).first()
+                if app_check:
+                    session.application_id = application_id
+                    self.save_session(session)
+            elif session.application_id:
+                app_check = self.db.query(Application).filter(Application.id == session.application_id, Application.citizen_ref == citizen_ref).first()
+                if not app_check:
+                    session.application_id = None
+                    self.save_session(session)
             return session
 
         # 2. Check for latest inactive/expired session for this citizen
@@ -104,7 +111,7 @@ class SessionRepository:
             # CASE 2: Reactivate existing session
             latest_session.expires_at = now + ttl
             latest_session.updated_at = now
-            if target_app:
+            if target_app and target_app.citizen_ref == citizen_ref:
                 latest_session.application_id = target_app.id
                 app_fields = app_repo.get_fields(target_app.id)
                 if app_fields:
@@ -115,6 +122,8 @@ class SessionRepository:
                     latest_session.current_node = "DOCUMENT_UPLOAD"
                 elif target_app.status in ("SUBMITTED_FOR_VERIFICATION", "UNDER_REVIEW", "COMPLETED"):
                     latest_session.current_node = "SUBMITTED"
+            else:
+                latest_session.application_id = None
             self.db.commit()
             self.db.refresh(latest_session)
             return latest_session

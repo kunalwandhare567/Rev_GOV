@@ -364,14 +364,15 @@ export default function CitizenChat() {
 
   // Auto-set identifier from auth when authenticated
   useEffect(() => {
-    if (isCitizenAuthenticated && resolvedId && !store.citizenIdentifier) {
+    if (isCitizenAuthenticated && resolvedId) {
+      if (store.citizenRef && store.citizenRef !== citizenUser?.citizen_id) {
+        store.reset()
+      }
       store.setCitizenIdentifier(resolvedId)
-    }
-    if (isCitizenAuthenticated && !idSet) {
+      setCitizenId(resolvedId)
       setIdSet(true)
-      if (resolvedId) setCitizenId(resolvedId)
     }
-  }, [isCitizenAuthenticated, resolvedId])
+  }, [isCitizenAuthenticated, resolvedId, citizenUser?.citizen_id])
 
   // ── Right Panel: Activity + Slots + Your Journey ──
   const currentService = store.selectedService || preselectedService
@@ -423,16 +424,20 @@ export default function CitizenChat() {
 
   // Fetch initial session state
   useEffect(() => {
-    if (!store.citizenIdentifier) return
-    conversationApi.getSession(store.citizenIdentifier)
+    const currentId = citizenUser?.citizen_id || resolvedId || store.citizenIdentifier
+    if (!currentId) return
+
+    conversationApi.getSession(currentId)
       .then(data => { 
-        if (data?.session_id && data.current_node !== CONV_NODES.INIT) {
+        if (data?.session_id && data.current_node !== CONV_NODES.INIT && data.status !== 'inactive') {
           setShowResume(true) 
+        } else {
+          setShowResume(false)
         }
         store.syncFromResponse(data)
       })
       .catch(() => {})
-  }, [store.citizenIdentifier])
+  }, [citizenUser?.citizen_id, resolvedId, store.citizenIdentifier])
 
   // Initialize Speech Recognition (STT)
   useEffect(() => {
