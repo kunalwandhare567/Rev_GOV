@@ -86,7 +86,11 @@ export default function StatusTracker() {
           <div className={styles.resultCard}>
             <div className={styles.resultHeader}>
               <div>
-                <h2 className={styles.resultService}>{app.service_name || app.service_type}</h2>
+                <h2 className={styles.resultService}>
+                  {typeof app.service_name === 'object'
+                    ? (app.service_name?.en || Object.values(app.service_name || {})[0] || app.service_type)
+                    : (app.service_name || app.service_type)}
+                </h2>
                 <p className={styles.resultId}>{app.application_number} · {new Date(app.created_at).toLocaleDateString()}</p>
               </div>
               <div className={styles.statusBadge} style={{

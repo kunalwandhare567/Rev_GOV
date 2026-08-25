@@ -216,10 +216,13 @@
   --citizen-text:    var(--rg-text-heading);
   --citizen-muted:   var(--rg-text-body);
 
-  --admin-bg:       var(--clr-dark-900);
-  --admin-surface:  var(--clr-dark-800);
-  --admin-surface2: var(--clr-dark-700);
-  --admin-border:   rgba(255,255,255,0.08);
-  --admin-text:     #e8eaf6;
-  --admin-muted:    #8892b0;
+  /* admin / government officer theme */
+  --admin-bg:        #f8fafc;
+  --admin-surface:   #ffffff;
+  --admin-surface2:  #f1f5f9;
+  --admin-border:    #e2e8f0;
+  --admin-text:      #0f172a;
+  --admin-muted:     #64748b;
+  --admin-header-bg: #00355f;
+  --admin-header-text: #ffffff;
 }

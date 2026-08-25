@@ -112,3 +112,26 @@ def mock_openrouter_for_e2e(request):
 
     with patch.object(OpenRouterProvider, "_call", mock_call):
         yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clean_test_database_after_session():
+    """Ensure automated test runs clean up their test data so development SQLite remains clean."""
+    yield
+    from sqlalchemy import text
+    from app.core.database import engine
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA foreign_keys=OFF;"))
+            conn.execute(text("DELETE FROM application_data WHERE application_id IN (SELECT id FROM applications WHERE citizen_ref != 'CIT-013');"))
+            conn.execute(text("DELETE FROM documents WHERE application_id IN (SELECT id FROM applications WHERE citizen_ref != 'CIT-013');"))
+            conn.execute(text("DELETE FROM certificates WHERE application_id IN (SELECT id FROM applications WHERE citizen_ref != 'CIT-013');"))
+            conn.execute(text("DELETE FROM conversation_messages WHERE session_id IN (SELECT id FROM conversation_sessions WHERE citizen_ref != 'CIT-013');"))
+            conn.execute(text("DELETE FROM conversation_sessions WHERE citizen_ref != 'CIT-013';"))
+            conn.execute(text("DELETE FROM applications WHERE citizen_ref != 'CIT-013';"))
+            conn.execute(text("DELETE FROM citizens WHERE citizen_ref != 'CIT-013';"))
+            conn.execute(text("DELETE FROM users WHERE username NOT IN ('admin', 'vikilokhande66@gmail.com');"))
+            conn.execute(text("DELETE FROM audit_logs WHERE actor NOT IN ('admin', 'CIT-013');"))
+            conn.commit()
+    except Exception:
+        pass

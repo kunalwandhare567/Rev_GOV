@@ -1,371 +1,361 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { RefreshCw, ExternalLink, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import {
+  FileText,
+  Clock,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  CreditCard,
+  Award,
+  RefreshCw,
+  ArrowRight,
+  TrendingUp,
+  Activity,
+  ShieldCheck,
+} from 'lucide-react'
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { dashboardApi } from '../../api/dashboard'
 import { applicationsApi } from '../../api/applications'
-import { STATUS_CONFIG, EVENT_TYPE_CONFIG, POLL_INTERVALS } from '../../utils/constants'
+import { STATUS_CONFIG } from '../../utils/constants'
 import styles from './AdminDashboard.module.css'
 
-const RADIAN = Math.PI / 180
-const renderCustomLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
-  if (percent < 0.05) return null
-  const r = innerRadius + (outerRadius - innerRadius) * 0.5
-  const x = cx + r * Math.cos(-midAngle * RADIAN)
-  const y = cy + r * Math.sin(-midAngle * RADIAN)
-  return <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={11}>{`${(percent*100).toFixed(0)}%`}</text>
+const formatServiceName = (name, id = '') => {
+  if (!name) return (id || '').replace(/_/g, ' ')
+  if (typeof name === 'object') return name.en || Object.values(name)[0] || id
+  return String(name).replace(/_/g, ' ')
 }
 
-function MetricCard({ label, value, trend, trendVal, color, sub }) {
-  const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
-  const trendColor = trend === 'up' ? 'var(--clr-success-400)' : trend === 'down' ? 'var(--clr-danger-400)' : 'var(--clr-gray-400)'
+function MetricCard({ title, count, icon: Icon, color, bg, linkTo }) {
   return (
-    <div className={styles.metricCard}>
-      <div className={styles.metricLabel}>{label}</div>
-      <div className={styles.metricValue} style={{color: color || 'var(--admin-text)'}}>{value ?? '—'}</div>
-      {sub && <div className={styles.metricSub}>{sub}</div>}
-      {trendVal !== undefined && (
-        <div className={styles.metricTrend} style={{color: trendColor}}>
-          <TrendIcon size={14}/> {trendVal}
+    <Link to={linkTo} className={styles.metricCard}>
+      <div className={styles.metricHeader}>
+        <span className={styles.metricTitle}>{title}</span>
+        <div className={styles.metricIconWrap} style={{ color, backgroundColor: bg }}>
+          <Icon size={20} />
         </div>
-      )}
-    </div>
+      </div>
+      <div className={styles.metricCount} style={{ color }}>
+        {count ?? 0}
+      </div>
+      <div className={styles.metricFooter}>
+        <span>View applications</span>
+        <ArrowRight size={14} />
+      </div>
+    </Link>
   )
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-
 export default function AdminDashboard() {
-  const queryClient = useQueryClient()
-  const [selectedApp, setSelectedApp] = useState(null)   // app being decided on
-  const [decisionModal, setDecisionModal] = useState(null) // { type, reason, notes }
-  const [decisionResult, setDecisionResult] = useState(null)
-  const { data: overview, dataUpdatedAt } = useQuery({
-    queryKey: ['dashboard-overview'],
+  const {
+    data: overview,
+    isLoading: overviewLoading,
+    refetch: refetchOverview,
+    isFetching,
+  } = useQuery({
+    queryKey: ['admin-overview'],
     queryFn: dashboardApi.getOverview,
-    refetchInterval: POLL_INTERVALS.DASHBOARD,
+    refetchInterval: 10000,
   })
 
-  const { data: recentData } = useQuery({
-    queryKey: ['recent-apps'],
-    queryFn: () => applicationsApi.getRecent(20),
-    refetchInterval: POLL_INTERVALS.DASHBOARD,
+  const { data: awaitingData, isLoading: awaitingLoading } = useQuery({
+    queryKey: ['awaiting-review-apps'],
+    queryFn: () =>
+      applicationsApi.getAdminList({
+        status: 'SUBMITTED_FOR_VERIFICATION',
+        limit: 5,
+      }),
+    refetchInterval: 10000,
   })
 
   const { data: auditData } = useQuery({
-    queryKey: ['live-feed'],
-    queryFn: () => dashboardApi.getAuditLog(10),
-    refetchInterval: POLL_INTERVALS.LIVE_FEED,
+    queryKey: ['admin-audit-feed'],
+    queryFn: () => dashboardApi.getAuditLog(12),
+    refetchInterval: 10000,
   })
 
+  const byStatus = overview?.by_status || {}
+  const byService = overview?.by_service || {}
   const stats = overview?.stats || {}
-  const byStatus   = overview?.by_status   || {}
-  const byService  = overview?.by_service  || {}
-  const byLanguage = overview?.by_language || {}
+  const totalApps = overview?.total_applications ?? 0
 
-  // Phase 8: Government Decision Mutation
-  const decideMutation = useMutation({
-    mutationFn: async ({ trackingId, decision, reason, notes }) => {
-      const token = localStorage.getItem('admin_token') || ''
-      const res = await fetch(`${API_BASE}/api/v1/mock-government/simulate-decision`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          tracking_id: trackingId,
-          decision,
-          reason: reason || null,
-          admin_notes: notes || null,
-        }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || `Decision failed (${res.status})`)
-      }
-      return res.json()
-    },
-    onSuccess: (data) => {
-      setDecisionResult({ success: true, message: data.message, newStatus: data.new_status })
-      queryClient.invalidateQueries({ queryKey: ['recent-apps'] })
-      queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
-      setSelectedApp(null)
-    },
-    onError: (err) => {
-      setDecisionResult({ success: false, message: err.message })
-    },
-  })
+  // Count cards (Authoritative from SQLite)
+  const submittedCount = overview?.submitted ?? (byStatus['SUBMITTED_FOR_VERIFICATION'] || byStatus['SUBMITTED'] || 0)
+  const underReviewCount = overview?.under_review ?? (byStatus['UNDER_REVIEW'] || 0)
+  const clarificationCount = overview?.clarification_required ?? (byStatus['CLARIFICATION_REQUIRED'] || 0)
+  const approvedCount = overview?.approved ?? (byStatus['APPROVED'] || 0)
+  const rejectedCount = overview?.rejected ?? (byStatus['REJECTED'] || 0)
+  const paymentRequiredCount = overview?.payment_required ?? (byStatus['PAYMENT_REQUIRED'] || 0)
+  const completedCount = overview?.completed ?? (byStatus['COMPLETED'] || 0)
 
-  const statusPieData = Object.entries(byStatus).map(([k,v]) => ({
-    name: k, value: v, fill: STATUS_CONFIG[k]?.dot || '#6b7280'
-  })).filter(d => d.value > 0)
+  // Chart data
+  const statusChartData = [
+    { name: 'Submitted', value: submittedCount, color: '#4f46e5' },
+    { name: 'Under Review', value: underReviewCount, color: '#f59e0b' },
+    { name: 'Clarification', value: clarificationCount, color: '#dc2626' },
+    { name: 'Approved', value: approvedCount, color: '#16a34a' },
+    { name: 'Payment Req', value: paymentRequiredCount, color: '#ea580c' },
+    { name: 'Completed', value: completedCount, color: '#0284c7' },
+    { name: 'Rejected', value: rejectedCount, color: '#94a3b8' },
+  ].filter((item) => item.value > 0)
 
-  const serviceBarData = Object.entries(byService).map(([k,v]) => ({ name: k.replace('_certificate','').toUpperCase(), value: v }))
-  const langBarData    = Object.entries(byLanguage).map(([k,v]) => ({ name: k.toUpperCase(), value: v })).sort((a,b) => b.value-a.value)
+  const serviceChartData = Object.entries(byService).map(([svc, count]) => ({
+    name: svc.replace(/_/g, ' ').replace('certificate', 'cert'),
+    count,
+  }))
 
-  const recentApps = recentData?.applications || []
-  const liveEvents = auditData?.events || []
-  const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : ''
+  const awaitingApps = awaitingData?.applications || []
+  const auditEvents = auditData?.events || []
 
   return (
-    <div className={styles.page}>
-      <div className={styles.pageHeader}>
+    <div className={styles.container}>
+      {/* ── Top Header ── */}
+      <div className={styles.header}>
         <div>
-          <h1 className={styles.title}>Operations Dashboard</h1>
-          <p className={styles.sub}>Auto-refreshing every 5s · Last updated: {lastUpdated}</p>
+          <h1 className={styles.title}>Revenue Services Operational Dashboard</h1>
+          <p className={styles.subtitle}>
+            Real-time government oversight, application verification pipeline & audit logging.
+          </p>
         </div>
-        <Link to="/admin/data-guard" className={styles.guardLink}><RefreshCw size={14}/> Data Guard Live</Link>
+        <button
+          className={styles.refreshBtn}
+          onClick={() => refetchOverview()}
+          disabled={isFetching}
+        >
+          <RefreshCw size={16} className={isFetching ? styles.spin : ''} />
+          <span>Sync Realtime</span>
+        </button>
       </div>
 
+      {/* ── Metric Cards Grid ── */}
       <div className={styles.metricsGrid}>
-        <MetricCard label="Active Sessions"   value={stats.active_sessions}   color="var(--clr-success-400)"  sub="Current"/>
-        <MetricCard label="Submitted Today"   value={stats.submitted_today}   color="var(--clr-primary-400)" sub="Today"/>
-        <MetricCard label="Total Approved"    value={stats.total_approved}    color="var(--clr-success-400)" sub="All time"/>
-        <MetricCard label="Total Rejected"    value={stats.total_rejected}    color="var(--clr-danger-400)"  sub="All time"/>
-        <MetricCard label="DG Blocks Today"   value={stats.dg_blocks_today}   color="var(--clr-warning-400)" sub="Today"/>
-        <MetricCard label="Avg Anomaly Score" value={stats.avg_anomaly_score?.toFixed(3)} color="var(--clr-accent-400)" sub="Lower is better"/>
+        <MetricCard
+          title="Total Applications"
+          count={totalApps}
+          icon={FileText}
+          color="#00355f"
+          bg="#e0f2fe"
+          linkTo="/admin/applications?status=ALL"
+        />
+        <MetricCard
+          title="Submitted (Awaiting)"
+          count={submittedCount}
+          icon={Clock}
+          color="#4f46e5"
+          bg="#eef2ff"
+          linkTo="/admin/applications?status=SUBMITTED_FOR_VERIFICATION"
+        />
+        <MetricCard
+          title="Under Review"
+          count={underReviewCount}
+          icon={Activity}
+          color="#d97706"
+          bg="#fef3c7"
+          linkTo="/admin/applications?status=UNDER_REVIEW"
+        />
+        <MetricCard
+          title="Clarification Req."
+          count={clarificationCount}
+          icon={AlertTriangle}
+          color="#dc2626"
+          bg="#fee2e2"
+          linkTo="/admin/applications?status=CLARIFICATION_REQUIRED"
+        />
+        <MetricCard
+          title="Approved"
+          count={approvedCount}
+          icon={CheckCircle}
+          color="#16a34a"
+          bg="#dcfce7"
+          linkTo="/admin/applications?status=APPROVED"
+        />
+        <MetricCard
+          title="Payment Required"
+          count={paymentRequiredCount}
+          icon={CreditCard}
+          color="#ea580c"
+          bg="#ffedd5"
+          linkTo="/admin/applications?status=PAYMENT_REQUIRED"
+        />
+        <MetricCard
+          title="Completed"
+          count={completedCount}
+          icon={Award}
+          color="#0284c7"
+          bg="#e0f2fe"
+          linkTo="/admin/applications?status=COMPLETED"
+        />
+        <MetricCard
+          title="Rejected"
+          count={rejectedCount}
+          icon={XCircle}
+          color="#b91c1c"
+          bg="#fee2e2"
+          linkTo="/admin/applications?status=REJECTED"
+        />
       </div>
 
-      <div className={styles.chartsRow}>
-        <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>By Status</h3>
-          {statusPieData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie data={statusPieData} cx="50%" cy="50%" innerRadius={55} outerRadius={85}
-                  dataKey="value" labelLine={false} label={renderCustomLabel}>
-                  {statusPieData.map((d,i) => <Cell key={i} fill={d.fill}/>)}
-                </Pie>
-                <Tooltip contentStyle={{background:'#1a1d2e',border:'1px solid rgba(255,255,255,.1)',borderRadius:'8px',color:'#e8eaf6'}}/>
-                <Legend wrapperStyle={{fontSize:'11px',color:'#8892b0'}}/>
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <div className={styles.noData}>No data yet</div>}
-        </div>
-
-        <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>By Service</h3>
-          {serviceBarData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={serviceBarData} margin={{top:5,right:10,left:0,bottom:5}}>
-                <XAxis dataKey="name" tick={{fill:'#8892b0',fontSize:11}} axisLine={false} tickLine={false}/>
-                <YAxis tick={{fill:'#8892b0',fontSize:11}} axisLine={false} tickLine={false}/>
-                <Tooltip contentStyle={{background:'#1a1d2e',border:'1px solid rgba(255,255,255,.1)',borderRadius:'8px',color:'#e8eaf6'}}/>
-                <Bar dataKey="value" fill="var(--clr-primary-500)" radius={[4,4,0,0]}/>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <div className={styles.noData}>No data yet</div>}
-        </div>
-
-        <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>Language Distribution</h3>
-          <div className={styles.langBars}>
-            {langBarData.map(({name,value}) => {
-              const total = langBarData.reduce((s,d)=>s+d.value,0)||1
-              const pct = Math.round((value/total)*100)
-              return (
-                <div key={name} className={styles.langRow}>
-                  <span className={styles.langName}>{name}</span>
-                  <div className={styles.langBarWrap}>
-                    <div className={styles.langBarFill} style={{width:`${pct}%`}}/>
-                  </div>
-                  <span className={styles.langPct}>{pct}%</span>
-                </div>
-              )
-            })}
-            {langBarData.length === 0 && <div className={styles.noData}>No data yet</div>}
+      {/* ── Mid Section: Awaiting Applications & Live Feed ── */}
+      <div className={styles.midGrid}>
+        {/* Awaiting Review Card */}
+        <div className={styles.panelCard}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitleGroup}>
+              <Clock size={18} className={styles.panelIcon} />
+              <h2 className={styles.panelTitle}>Applications Awaiting Officer Review</h2>
+            </div>
+            <Link to="/admin/applications?status=SUBMITTED_FOR_VERIFICATION" className={styles.viewAllLink}>
+              View All Queue ({submittedCount})
+            </Link>
           </div>
-        </div>
-      </div>
 
-      <div className={styles.bottomRow}>
-        <div className={styles.tableCard}>
-          <div className={styles.tableHeader}>
-            <h3 className={styles.chartTitle}>Recent Applications</h3>
-            <span className={styles.tableCount}>{recentApps.length} shown</span>
-          </div>
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  {['Application #','Service','Language','Channel','Status','Score','Action'].map(h=>(
-                    <th key={h} className={styles.th}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {recentApps.map(app => (
-                  <tr key={app.application_number} className={styles.tr}>
-                    <td className={styles.td}><code className={styles.appNum}>{app.application_number}</code></td>
-                    <td className={styles.td}>{(app.service_type||'').replace('_certificate','').toUpperCase()}</td>
-                    <td className={styles.td}>{(app.language||'').toUpperCase()}</td>
-                    <td className={styles.td}>{app.channel||'WEB'}</td>
-                    <td className={styles.td}>
-                      <span className={styles.statusPill} style={{background:STATUS_CONFIG[app.status]?.bg,color:STATUS_CONFIG[app.status]?.color}}>
-                        {app.status}
-                      </span>
-                    </td>
-                    <td className={styles.td}>
-                      <span style={{color: app.anomaly_score > 0.7 ? 'var(--clr-danger-400)' : app.anomaly_score > 0.4 ? 'var(--clr-warning-400)' : 'var(--clr-success-400)'}}>
-                        {(app.anomaly_score||0).toFixed(2)}
-                      </span>
-                    </td>
-                     <td className={styles.td}>
-                       <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                         <Link to={`/admin/review/${app.application_number}`} className={styles.reviewBtn}>Review</Link>
-                         {['UNDER_REVIEW', 'SUBMITTED', 'SUBMITTED_FOR_VERIFICATION', 'PENDING_OFFICER_PRE_APPROVAL', 'FINAL_REVIEW', 'DOCUMENT_COLLECTION', 'VALIDATION_COMPLETED'].includes(app.status) && (
-                           <button
-                             className={styles.decideBtn}
-                             onClick={() => {
-                               setSelectedApp(app)
-                               setDecisionModal({ decision: '', reason: '', notes: '' })
-                               setDecisionResult(null)
-                             }}
-                           >
-                             ⚖️ Decide
-                           </button>
-                         )}
-                       </div>
-                     </td>
+          {awaitingLoading ? (
+            <div className={styles.loadingBox}>Loading queue...</div>
+          ) : awaitingApps.length === 0 ? (
+            <div className={styles.emptyBox}>
+              <ShieldCheck size={36} color="#16a34a" />
+              <p>No applications currently awaiting verification.</p>
+            </div>
+          ) : (
+            <div className={styles.tableWrapper}>
+              <table className={styles.miniTable}>
+                <thead>
+                  <tr>
+                    <th>Tracking ID</th>
+                    <th>Applicant</th>
+                    <th>Service</th>
+                    <th>Readiness</th>
+                    <th style={{ textAlign: 'right' }}>Action</th>
                   </tr>
-                ))}
-                {recentApps.length === 0 && (
-                  <tr><td colSpan={7} className={styles.emptyRow}>No applications yet</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {awaitingApps.map((app) => (
+                    <tr key={app.id}>
+                      <td>
+                        <span className={styles.trackingText}>{app.tracking_id || app.application_number}</span>
+                      </td>
+                      <td>
+                        <span className={styles.applicantText}>{app.applicant_name || app.citizen_name}</span>
+                      </td>
+                      <td>
+                        <span className={styles.serviceText}>{formatServiceName(app.service_name, app.service_id)}</span>
+                      </td>
+                      <td>
+                        {app.readiness_score != null || app.progress_percent != null ? (
+                          <span className={styles.readinessPill}>
+                            {Math.round(app.readiness_score != null ? app.readiness_score : app.progress_percent)}%
+                          </span>
+                        ) : (
+                          <span style={{ color: '#94a3b8' }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <Link to={`/admin/review/${app.id || app.application_number}`} className={styles.actionBtn}>
+                          Review
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
-        <div className={styles.feedCard}>
-          <div className={styles.feedHeader}>
-            <h3 className={styles.chartTitle}>Live Events</h3>
-            <Link to="/admin/audit" className={styles.auditLink}>View all <ExternalLink size={12}/></Link>
+        {/* Live Audit & Verification Feed */}
+        <div className={styles.panelCard}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitleGroup}>
+              <Activity size={18} className={styles.panelIcon} />
+              <h2 className={styles.panelTitle}>Real-time Verification & Event Feed</h2>
+            </div>
+            <Link to="/admin/audit" className={styles.viewAllLink}>
+              Audit Trail
+            </Link>
           </div>
+
           <div className={styles.feedList}>
-            {liveEvents.length === 0 && <div className={styles.noData}>No events yet</div>}
-            {liveEvents.map((ev,i) => {
-              const cfg = EVENT_TYPE_CONFIG[ev.event_type] || {}
-              return (
-                <div key={ev.id||i} className={styles.feedItem}>
-                  <span className={styles.feedDot} style={{background:cfg.color||'var(--clr-gray-400)'}}/>
+            {auditEvents.length === 0 ? (
+              <div className={styles.emptyBox}>No recent audit events logged.</div>
+            ) : (
+              auditEvents.map((evt, idx) => (
+                <div key={evt.id || idx} className={styles.feedItem}>
+                  <div className={styles.feedDot} />
                   <div className={styles.feedContent}>
-                    <span className={styles.feedType} style={{color:cfg.color}}>{ev.event_type}</span>
-                    <span className={styles.feedAction}>{ev.action?.substring(0,60)}</span>
+                    <div className={styles.feedTop}>
+                      <span className={styles.feedType}>{evt.event_type}</span>
+                      <span className={styles.feedTime}>
+                        {new Date(evt.timestamp || evt.created_at).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <p className={styles.feedAction}>{evt.action}</p>
+                    <span className={styles.feedActor}>Actor: {evt.actor}</span>
                   </div>
-                  <span className={styles.feedTime}>{new Date(ev.created_at||Date.now()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
                 </div>
-              )
-            })}
+              ))
+            )}
           </div>
         </div>
       </div>
 
-      {/* ── Phase 8: Government Decision Modal ── */}
-      {selectedApp && decisionModal !== null && (
-        <div className={styles.modalOverlay} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>
-          <div className={styles.modal} onClick={e => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h3>⚖️ Government Decision</h3>
-              <button className={styles.modalClose} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>✕</button>
-            </div>
-
-            <div className={styles.modalBody}>
-              <div className={styles.modalAppInfo}>
-                <span className={styles.modalAppNum}>{selectedApp.application_number}</span>
-                <span className={styles.modalService}>{(selectedApp.service_type || '').replace('_certificate', '').toUpperCase()}</span>
-                <span className={styles.modalStatus}>Status: {selectedApp.status}</span>
-              </div>
-
-              {decisionResult ? (
-                <div className={decisionResult.success ? styles.decisionSuccess : styles.decisionError}>
-                  {decisionResult.success ? '✅ ' : '❌ '}{decisionResult.message}
-                  {decisionResult.newStatus && <div style={{marginTop:'8px',fontSize:'13px'}}>New Status: <strong>{decisionResult.newStatus}</strong></div>}
-                  <button className={styles.closeResultBtn} onClick={() => { setSelectedApp(null); setDecisionResult(null) }}>Close</button>
-                </div>
-              ) : (
-                <>
-                  <div className={styles.decisionOptions}>
-                    {[
-                      { key: 'APPROVE',                label: '✅ Approve',               color: '#10b981', bg: '#ecfdf5' },
-                      { key: 'REJECT',                 label: '❌ Reject',                color: '#ef4444', bg: '#fef2f2' },
-                      { key: 'CLARIFICATION_REQUIRED', label: '📝 Request Clarification', color: '#f59e0b', bg: '#fffbeb' },
-                    ].map(opt => (
-                      <button
-                        key={opt.key}
-                        className={styles.decisionOption}
-                        style={{
-                          borderColor: decisionModal.decision === opt.key ? opt.color : '#e5e7eb',
-                          background: decisionModal.decision === opt.key ? opt.bg : 'white',
-                          color: decisionModal.decision === opt.key ? opt.color : '#374151',
-                        }}
-                        onClick={() => setDecisionModal(m => ({ ...m, decision: opt.key }))}
-                      >
-                        {opt.label}
-                      </button>
+      {/* ── Charts Grid ── */}
+      <div className={styles.chartsGrid}>
+        {/* Status Distribution */}
+        <div className={styles.panelCard}>
+          <h3 className={styles.chartTitle}>Application Lifecycle Distribution</h3>
+          <div className={styles.chartWrap}>
+            {statusChartData.length === 0 ? (
+              <div className={styles.emptyBox}>No application distribution data.</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie
+                    data={statusChartData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={85}
+                    paddingAngle={4}
+                    dataKey="value"
+                  >
+                    {statusChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
-                  </div>
-
-                  {(decisionModal.decision === 'REJECT' || decisionModal.decision === 'CLARIFICATION_REQUIRED') && (
-                    <div className={styles.decisionReasonField}>
-                      <label className={styles.decisionLabel}>
-                        {decisionModal.decision === 'REJECT' ? 'Rejection Reason *' : 'Clarification Required *'}
-                      </label>
-                      <textarea
-                        className={styles.decisionTextarea}
-                        rows={3}
-                        placeholder={decisionModal.decision === 'REJECT'
-                          ? 'State the reason for rejection (visible to citizen)'
-                          : 'Describe what additional information is needed (visible to citizen)'}
-                        value={decisionModal.reason}
-                        onChange={e => setDecisionModal(m => ({ ...m, reason: e.target.value }))}
-                      />
-                    </div>
-                  )}
-
-                  <div className={styles.decisionReasonField}>
-                    <label className={styles.decisionLabel}>Admin Notes (internal, not shown to citizen)</label>
-                    <textarea
-                      className={styles.decisionTextarea}
-                      rows={2}
-                      placeholder="Internal notes for audit trail..."
-                      value={decisionModal.notes}
-                      onChange={e => setDecisionModal(m => ({ ...m, notes: e.target.value }))}
-                    />
-                  </div>
-
-                  <div className={styles.modalActions}>
-                    <button
-                      className={styles.cancelModalBtn}
-                      onClick={() => { setSelectedApp(null); setDecisionResult(null) }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className={styles.submitDecisionBtn}
-                      disabled={
-                        !decisionModal.decision ||
-                        ((decisionModal.decision === 'REJECT' || decisionModal.decision === 'CLARIFICATION_REQUIRED') && !decisionModal.reason.trim()) ||
-                        decideMutation.isPending
-                      }
-                      onClick={() => decideMutation.mutate({
-                        trackingId: selectedApp.tracking_id || selectedApp.application_number,
-                        decision: decisionModal.decision,
-                        reason: decisionModal.reason,
-                        notes: decisionModal.notes,
-                      })}
-                    >
-                      {decideMutation.isPending ? '⏳ Processing...' : 'Submit Decision'}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+          <div className={styles.chartLegend}>
+            {statusChartData.map((entry) => (
+              <div key={entry.name} className={styles.legendItem}>
+                <span className={styles.legendDot} style={{ backgroundColor: entry.color }} />
+                <span>{entry.name}: {entry.value}</span>
+              </div>
+            ))}
           </div>
         </div>
-      )}
+
+        {/* Service Volume Distribution */}
+        <div className={styles.panelCard}>
+          <h3 className={styles.chartTitle}>Service Request Volume</h3>
+          <div className={styles.chartWrap}>
+            {serviceChartData.length === 0 ? (
+              <div className={styles.emptyBox}>No service request data.</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={serviceChartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} angle={-15} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="#00355f" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

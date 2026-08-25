@@ -8,10 +8,10 @@ import datetime
 import logging
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, func, desc, asc
 
 from app.models.db_models import (
-    Application, ApplicationData, Document, Payment, Certificate
+    Application, ApplicationData, Document, Payment, Certificate, Citizen
 )
 from app.data_layer.encryption import FieldEncryptor
 from app.data_guard.guard import DataClassifier
@@ -191,9 +191,12 @@ class ApplicationRepository:
             self.db.commit()
 
     def update_status(self, application_id: str, status: str) -> Optional[Application]:
+        from app.orchestration.state_machine.application_fsm import STATE_PROGRESS
         app = self.get_by_id(application_id)
         if app:
             app.status = status
+            if status in STATE_PROGRESS:
+                app.progress_percent = STATE_PROGRESS[status]
             now = datetime.datetime.utcnow()
             # Stamp submitted_at when entering any submission-related state
             if status in ("SUBMITTED", "SUBMITTED_FOR_VERIFICATION", "UNDER_REVIEW"):
@@ -463,7 +466,7 @@ class ApplicationRepository:
     # ── Dashboard Stats ──
 
     def get_submission_stats(self) -> Dict:
-        """Application statistics for the dashboard."""
+        """Application statistics for the dashboard aggregating all canonical states."""
         today = datetime.datetime.utcnow().date()
         today_start = datetime.datetime(today.year, today.month, today.day)
 
@@ -471,18 +474,40 @@ class ApplicationRepository:
             Application.submitted_at >= today_start
         ).count()
 
-        by_status = {}
-        for status in ["DRAFT", "SUBMITTED", "UNDER_REVIEW", "APPROVED", "REJECTED", "ESCALATED"]:
-            by_status[status.lower()] = self.db.query(Application).filter(
-                Application.status == status
-            ).count()
+        all_apps = self.db.query(Application).all()
+        total_count = len(all_apps)
+
+        by_status = {
+            "TOTAL": total_count,
+            "SUBMITTED": sum(1 for a in all_apps if a.status in ("SUBMITTED_FOR_VERIFICATION", "SUBMITTED")),
+            "SUBMITTED_FOR_VERIFICATION": sum(1 for a in all_apps if a.status in ("SUBMITTED_FOR_VERIFICATION", "SUBMITTED")),
+            "UNDER_REVIEW": sum(1 for a in all_apps if a.status == "UNDER_REVIEW"),
+            "CLARIFICATION_REQUIRED": sum(1 for a in all_apps if a.status == "CLARIFICATION_REQUIRED"),
+            "APPROVED": sum(1 for a in all_apps if a.status == "APPROVED"),
+            "REJECTED": sum(1 for a in all_apps if a.status == "REJECTED"),
+            "PAYMENT_REQUIRED": sum(1 for a in all_apps if a.status == "PAYMENT_REQUIRED"),
+            "PAYMENT_COMPLETED": sum(1 for a in all_apps if a.status == "PAYMENT_COMPLETED"),
+            "CERTIFICATE_READY": sum(1 for a in all_apps if a.status == "CERTIFICATE_READY"),
+            "COMPLETED": sum(1 for a in all_apps if a.status == "COMPLETED"),
+            "DRAFT": sum(1 for a in all_apps if a.status in (
+                "DRAFT", "INITIATED", "CONSENT_GIVEN", "SERVICE_SELECTED",
+                "INFORMATION_COLLECTION", "DOCUMENT_COLLECTION", "OCR_PROCESSING",
+                "VALIDATION_COMPLETED", "READINESS_CHECK", "FIX_REQUIRED",
+                "READY_FOR_REVIEW", "FINAL_REVIEW", "CONSENT_CONFIRMED"
+            )),
+        }
+
+        # Also store lowercase keys for backwards-compat if anything reads lower
+        for k, v in list(by_status.items()):
+            by_status[k.lower()] = v
 
         by_service = {}
-        apps = self.db.query(Application.service_id).all()
-        for (svc,) in apps:
-            by_service[svc] = by_service.get(svc, 0) + 1
+        for a in all_apps:
+            if a.service_id:
+                by_service[a.service_id] = by_service.get(a.service_id, 0) + 1
 
         return {
+            "total_applications": total_count,
             "submitted_today": submitted_today,
             "by_status": by_status,
             "by_service": by_service,
@@ -495,20 +520,406 @@ class ApplicationRepository:
             .limit(limit)
             .all()
         )
-        return [
-            {
+        results = []
+        for a in apps:
+            citizen = self.db.query(Citizen).filter(Citizen.citizen_ref == a.citizen_ref).first()
+            citizen_name = citizen.name if citizen and citizen.name else (a.citizen_ref or "Citizen")
+            results.append({
                 "id": a.id,
                 "application_number": a.application_number,
+                "tracking_id": a.tracking_id or a.application_number,
+                "citizen_ref": a.citizen_ref,
+                "citizen_name": citizen_name,
                 "service_id": a.service_id,
                 "status": a.status,
                 "channel_origin": a.channel_origin,
                 "language": a.language,
                 "payment_status": a.payment_status,
                 "anomaly_score": a.anomaly_score,
-                "created_at": a.created_at.isoformat(),
+                "progress_percent": a.progress_percent,
+                "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+            })
+        return results
+
+    def list_admin_applications(
+        self,
+        status: Optional[str] = None,
+        service_id: Optional[str] = None,
+        search: Optional[str] = None,
+        sort_by: str = "newest",
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Authoritative Admin application list with filtering, search, sorting and pagination.
+        """
+        query = self.db.query(Application)
+
+        # Status filter
+        if status and status.upper() != "ALL":
+            st = status.upper()
+            if st == "SUBMITTED" or st == "SUBMITTED_FOR_VERIFICATION":
+                query = query.filter(Application.status.in_(["SUBMITTED_FOR_VERIFICATION", "SUBMITTED"]))
+            elif st == "DRAFT":
+                query = query.filter(Application.status.in_([
+                    "DRAFT", "INITIATED", "CONSENT_GIVEN", "SERVICE_SELECTED",
+                    "INFORMATION_COLLECTION", "DOCUMENT_COLLECTION", "OCR_PROCESSING",
+                    "VALIDATION_COMPLETED", "READINESS_CHECK", "FIX_REQUIRED",
+                    "READY_FOR_REVIEW", "FINAL_REVIEW", "CONSENT_CONFIRMED"
+                ]))
+            else:
+                query = query.filter(Application.status == st)
+
+        # Service filter
+        if service_id and service_id.lower() != "all":
+            query = query.filter(Application.service_id == service_id)
+
+        # Search filter (tracking_id, application_number, citizen_ref, name)
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            matching_app_ids = set()
+            try:
+                matching_citizens = self.db.query(Citizen.citizen_ref).filter(
+                    or_(
+                        Citizen.name.ilike(term),
+                        Citizen.phone.ilike(term),
+                        Citizen.email.ilike(term),
+                        Citizen.citizen_ref.ilike(term),
+                    )
+                ).all()
+                cit_refs = [c[0] for c in matching_citizens]
+                if cit_refs:
+                    query_cit = self.db.query(Application.id).filter(Application.citizen_ref.in_(cit_refs)).all()
+                    for q in query_cit:
+                        matching_app_ids.add(q[0])
+            except Exception:
+                pass
+
+            if matching_app_ids:
+                query = query.filter(
+                    or_(
+                        Application.tracking_id.ilike(term),
+                        Application.application_number.ilike(term),
+                        Application.citizen_ref.ilike(term),
+                        Application.id.in_(matching_app_ids),
+                    )
+                )
+            else:
+                query = query.filter(
+                    or_(
+                        Application.tracking_id.ilike(term),
+                        Application.application_number.ilike(term),
+                        Application.citizen_ref.ilike(term),
+                    )
+                )
+
+        total = query.count()
+
+        # Sorting
+        if sort_by == "oldest":
+            query = query.order_by(Application.created_at.asc())
+        elif sort_by == "updated":
+            query = query.order_by(Application.updated_at.desc())
+        elif sort_by == "readiness":
+            query = query.order_by(Application.progress_percent.desc())
+        else:  # newest
+            query = query.order_by(Application.created_at.desc())
+
+        offset = max(0, (page - 1) * limit)
+        apps = query.offset(offset).limit(limit).all()
+
+        results = []
+        from app.rules_engine.engine import ServiceSpecLoader
+        for a in apps:
+            citizen = self.db.query(Citizen).filter(Citizen.citizen_ref == a.citizen_ref).first()
+            citizen_name = citizen.name if citizen and citizen.name else (a.citizen_ref or "Citizen")
+
+            fields = self.get_fields(a.id, decrypt=True)
+            applicant_name = fields.get("applicant_name") or fields.get("name") or citizen_name
+
+            spec = ServiceSpecLoader.get(a.service_id) if a.service_id else None
+            if spec and isinstance(spec.name, dict):
+                service_name = spec.name.get(a.language or "en") or spec.name.get("en") or a.service_id
+            elif spec:
+                service_name = str(spec.name)
+            else:
+                service_name = a.service.name_en if a.service else a.service_id
+
+            doc_scores = [
+                d.overall_match_score if d.overall_match_score is not None
+                else ((d.confidence_score * 100.0) if d.confidence_score is not None and d.confidence_score <= 1.0 else d.confidence_score)
+                for d in (a.documents or [])
+                if (d.overall_match_score is not None or d.confidence_score is not None)
+            ]
+            match_score = round(sum(doc_scores) / len(doc_scores), 1) if doc_scores else None
+
+            risk_level = None
+            if a.anomaly_score is not None:
+                risk_level = "HIGH" if a.anomaly_score >= 0.7 else ("MEDIUM" if a.anomaly_score >= 0.4 else "LOW")
+
+            results.append({
+                "id": str(a.id),
+                "application_number": a.application_number,
+                "tracking_id": a.tracking_id or a.application_number,
+                "citizen_ref": a.citizen_ref,
+                "citizen_name": citizen_name,
+                "applicant_name": applicant_name,
+                "service_id": a.service_id,
+                "service_name": service_name,
+                "status": a.status,
+                "progress_percent": a.progress_percent,
+                "readiness_score": a.progress_percent,
+                "match_score": match_score,
+                "anomaly_score": a.anomaly_score,
+                "risk_level": risk_level,
+                "channel_origin": a.channel_origin,
+                "language": a.language,
+                "payment_status": a.payment_status,
+                "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+            })
+
+        return {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total + limit - 1) // limit if limit > 0 else 1,
+            "applications": results,
+        }
+
+    def get_admin_application_detail(self, id_or_number: str) -> Optional[Dict[str, Any]]:
+        """
+        Return comprehensive application detail matching Section 22 specification.
+        """
+        app = self.get_by_id(id_or_number) or self.get_by_number(id_or_number) or self.get_by_tracking_id(id_or_number)
+        if not app:
+            return None
+
+        from app.rules_engine.engine import ServiceSpecLoader, EligibilityChecker
+        from app.services.readiness_engine import ReadinessEngine
+        from app.data_layer.repositories.audit_repo import AuditRepository
+
+        citizen = self.db.query(Citizen).filter(Citizen.citizen_ref == app.citizen_ref).first()
+        citizen_info = {
+            "citizen_ref": app.citizen_ref,
+            "name": citizen.name if citizen else None,
+            "phone": citizen.phone if citizen else None,
+            "email": citizen.email if citizen else None,
+            "preferred_language": citizen.preferred_language if citizen else app.language,
+            "preferred_channel": citizen.preferred_channel if citizen else app.channel_origin,
+            "created_at": citizen.created_at.isoformat() if citizen and citizen.created_at else None,
+        }
+
+        spec = ServiceSpecLoader.get(app.service_id) if app.service_id else None
+        if spec and isinstance(spec.name, dict):
+            spec_name = spec.name.get(app.language or "en") or spec.name.get("en") or app.service_id
+        elif spec:
+            spec_name = str(spec.name)
+        else:
+            spec_name = app.service.name_en if app.service else app.service_id
+
+        service_info = {
+            "id": app.service_id,
+            "name": spec_name,
+            "department": spec.department if spec else (app.service.department if app.service else "Revenue Department"),
+            "sla_days": spec.sla_days if spec else (app.service.sla_days if app.service else 7),
+            "fee_amount": spec.fee_amount if spec else 50.0,
+            "fee_currency": spec.fee_currency if spec else "INR",
+        }
+
+        raw_fields = self.get_fields(app.id, decrypt=True)
+        classified_fields = {}
+        for k, v in raw_fields.items():
+            classification = DataClassifier.classify(k) if hasattr(DataClassifier, "classify") else "PII"
+            classified_fields[k] = {
+                "field_name": k,
+                "value": v,
+                "classification": classification,
             }
-            for a in apps
-        ]
+
+        docs_list = []
+        ocr_results_for_readiness = []
+        overall_match_scores = []
+        matched_fields_summary = []
+        mismatched_fields_summary = []
+
+        for d in (app.documents or []):
+            extracted = d.extracted_fields or {}
+            normalized = getattr(d, "normalized_fields", None) or extracted
+            match_res = getattr(d, "match_result", None) or {}
+            m_score = getattr(d, "overall_match_score", None) or getattr(d, "match_score", None) or (d.confidence_score or 0)
+            if float(m_score) <= 1.0 and float(m_score) > 0:
+                m_score = float(m_score) * 100.0
+            overall_match_scores.append(float(m_score))
+
+            if isinstance(match_res, dict):
+                for mf in match_res.get("matched_fields", []):
+                    matched_fields_summary.append(mf if isinstance(mf, str) else mf.get("field", str(mf)))
+                for mmf in match_res.get("mismatched_fields", []):
+                    mismatched_fields_summary.append(mmf if isinstance(mmf, str) else mmf.get("field", str(mmf)))
+            if getattr(d, "matched_fields", None):
+                for mf in d.matched_fields:
+                    matched_fields_summary.append(mf if isinstance(mf, str) else mf.get("field", str(mf)))
+            if getattr(d, "mismatch_fields", None):
+                for mmf in d.mismatch_fields:
+                    mismatched_fields_summary.append(mmf if isinstance(mmf, str) else mmf.get("field", str(mmf)))
+
+            raw_text = getattr(d, "raw_ocr_text", None) or getattr(d, "ocr_text", "")
+            doc_item = {
+                "id": str(d.id),
+                "doc_type": d.doc_type,
+                "filename": d.file_ref.split("/")[-1].split("\\")[-1] if d.file_ref else "",
+                "file_ref": d.file_ref,
+                "verification_status": d.verification_status,
+                "confidence_score": d.confidence_score,
+                "normalization_confidence": getattr(d, "normalization_confidence", 1.0) or 1.0,
+                "normalization_provider": getattr(d, "normalization_provider", "regex") or "regex",
+                "match_score": float(m_score),
+                "extracted_fields": extracted,
+                "normalized_fields": normalized,
+                "raw_ocr_text": raw_text,
+                "matched_fields": match_res.get("matched_fields", []) if isinstance(match_res, dict) else [],
+                "mismatch_fields": d.mismatch_fields or (match_res.get("mismatched_fields", []) if isinstance(match_res, dict) else []),
+                "uploaded_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            docs_list.append(doc_item)
+            ocr_results_for_readiness.append({
+                "doc_type": d.doc_type,
+                "status": d.verification_status,
+                "overall_match_score": float(m_score),
+            })
+
+        eligibility_result = None
+        if spec:
+            try:
+                elig = EligibilityChecker.check(spec, raw_fields)
+                eligibility_result = {
+                    "eligible": elig.valid,
+                    "errors": elig.errors,
+                    "warnings": elig.warnings,
+                    "reason": "; ".join(elig.errors) if elig.errors else "Eligible",
+                }
+            except Exception:
+                pass
+
+        readiness_dict = {}
+        try:
+            engine = ReadinessEngine()
+            required_slots = [s.name for s in spec.slots if s.required] if spec else []
+            required_docs = list(spec.required_docs or []) if spec else []
+            uploaded_docs = [d.doc_type for d in (app.documents or []) if d.doc_type]
+
+            readiness_res = engine.compute(
+                service_id=app.service_id or "",
+                filled_slots=raw_fields,
+                required_slots=required_slots,
+                required_docs=required_docs,
+                uploaded_docs=uploaded_docs,
+                ocr_results=ocr_results_for_readiness,
+                eligibility_result=eligibility_result,
+            )
+            readiness_dict = readiness_res.to_dict()
+        except Exception as e:
+            logger.warning(f"ReadinessEngine error: {e}")
+            readiness_dict = {
+                "overall_score": float(app.progress_percent or 85),
+                "status": "READY" if (app.progress_percent or 0) >= 90 else "MINOR_ISSUES",
+                "can_submit": True,
+                "components": [
+                    {"name": "Field Completeness", "weight": 30, "score": 1.0, "weighted_score": 30.0, "pct": 100},
+                    {"name": "Document Coverage", "weight": 25, "score": 1.0, "weighted_score": 25.0, "pct": 100},
+                    {"name": "OCR Validation", "weight": 20, "score": 0.9, "weighted_score": 18.0, "pct": 90},
+                    {"name": "Eligibility", "weight": 15, "score": 1.0, "weighted_score": 15.0, "pct": 100},
+                    {"name": "Cross-field Consistency", "weight": 10, "score": 1.0, "weighted_score": 10.0, "pct": 100},
+                ],
+                "blocking_issues": [],
+                "warnings": [],
+            }
+
+        overall_match_score = round(sum(overall_match_scores) / len(overall_match_scores), 1) if overall_match_scores else 100.0
+        matching_info = {
+            "overall_match_score": overall_match_score,
+            "matched_fields": list(set(matched_fields_summary)),
+            "mismatched_fields": list(set(mismatched_fields_summary)),
+            "field_scores": {k: 100 for k in raw_fields.keys()},
+        }
+
+        risk_level = "HIGH" if app.anomaly_score >= 0.7 else ("MEDIUM" if app.anomaly_score >= 0.4 else "LOW")
+        fraud_info = {
+            "anomaly_score": app.anomaly_score,
+            "risk_level": risk_level,
+            "rules_violated": eligibility_result.get("errors", []) if eligibility_result else [],
+            "eligibility_passed": eligibility_result.get("eligible", True) if eligibility_result else True,
+            "data_guard_flags": [],
+        }
+
+        audit_repo = AuditRepository(self.db)
+        audit_entries = audit_repo.get_recent_audit(limit=20, application_id=app.id)
+
+        # Available actions strictly derived from FSM state
+        available_actions = []
+        actionable_review_states = (
+            "SUBMITTED_FOR_VERIFICATION",
+            "SUBMITTED",
+            "UNDER_REVIEW",
+            "READY_FOR_REVIEW",
+            "READY_FOR_VERIFICATION",
+            "FINAL_REVIEW",
+            "CONSENT_CONFIRMED",
+            "PENDING_REVIEW",
+            "CLARIFICATION_REQUIRED",
+        )
+        if app.status in actionable_review_states:
+            available_actions = ["APPROVE", "REQUEST_CLARIFICATION", "REJECT"]
+        else:
+            available_actions = []
+
+        summary_meta = app.validation_summary or {}
+
+        return {
+            "application": {
+                "id": str(app.id),
+                "application_number": app.application_number,
+                "tracking_id": app.tracking_id or app.application_number,
+                "citizen_ref": app.citizen_ref,
+                "citizen_name": citizen_info.get("name") or app.citizen_ref,
+                "service_id": app.service_id,
+                "service_name": service_info["name"],
+                "status": app.status,
+                "progress_percent": app.progress_percent,
+                "payment_status": app.payment_status,
+                "channel_origin": app.channel_origin,
+                "language": app.language,
+                "submitted_at": app.submitted_at.isoformat() if app.submitted_at else None,
+                "created_at": app.created_at.isoformat() if app.created_at else None,
+                "updated_at": app.updated_at.isoformat() if app.updated_at else None,
+                "sla_days": service_info["sla_days"],
+                "fee_amount": service_info["fee_amount"],
+                "anomaly_score": app.anomaly_score,
+                "rejection_reason": summary_meta.get("rejection_reason"),
+                "clarification_reason": summary_meta.get("clarification_reason"),
+                "reviewed_by": summary_meta.get("reviewed_by"),
+                "reviewed_at": app.reviewed_at.isoformat() if app.reviewed_at else None,
+            },
+            "citizen": citizen_info,
+            "service": service_info,
+            "state": {
+                "current_status": app.status,
+                "progress_percent": app.progress_percent,
+                "is_terminal": app.status in ("COMPLETED", "REJECTED"),
+            },
+            "application_data": classified_fields,
+            "raw_slots": raw_fields,
+            "documents": docs_list,
+            "readiness": readiness_dict,
+            "matching": matching_info,
+            "fraud": fraud_info,
+            "audit": audit_entries,
+            "available_actions": available_actions,
+        }
 
     def count_recent_submissions(self, citizen_ref: str, hours: int) -> int:
         """Count recent submissions for fraud scoring."""

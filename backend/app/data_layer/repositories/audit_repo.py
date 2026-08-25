@@ -95,11 +95,18 @@ class AuditRepository:
             "last_block_at": last_block.created_at.isoformat() if last_block else None,
         }
 
-    def get_recent_audit(self, limit: int = 50, event_type: Optional[str] = None) -> List[Dict]:
-        """Fetch recent audit entries for the dashboard."""
+    def get_recent_audit(
+        self,
+        limit: int = 50,
+        event_type: Optional[str] = None,
+        application_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Fetch recent audit entries for the dashboard and application review."""
         query = self.db.query(AuditLog)
         if event_type:
             query = query.filter(AuditLog.event_type == event_type)
+        if application_id:
+            query = query.filter(AuditLog.application_id == application_id)
         entries = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
         return [
             {

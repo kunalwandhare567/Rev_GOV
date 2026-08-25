@@ -138,18 +138,35 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
     AppState.READY_FOR_REVIEW: [
         AppState.FINAL_REVIEW,             # Citizen opens 4-section form
         AppState.FIX_REQUIRED,             # Citizen wants to edit something
+        AppState.SUBMITTED_FOR_VERIFICATION, # Direct submission
+        AppState.UNDER_REVIEW,             # Direct officer review
+        AppState.APPROVED,                 # Officer decision
+        AppState.REJECTED,                 # Officer decision
+        AppState.CLARIFICATION_REQUIRED,   # Officer decision
     ],
     AppState.FINAL_REVIEW: [
         AppState.CONSENT_CONFIRMED,        # Citizen checked consent
         AppState.FIX_REQUIRED,             # Citizen found issue in review
         AppState.INFORMATION_COLLECTION,   # Edit basic details
         AppState.DOCUMENT_COLLECTION,      # Edit documents
+        AppState.SUBMITTED_FOR_VERIFICATION,
+        AppState.UNDER_REVIEW,
+        AppState.APPROVED,
+        AppState.REJECTED,
+        AppState.CLARIFICATION_REQUIRED,
     ],
     AppState.CONSENT_CONFIRMED: [
         AppState.SUBMITTED_FOR_VERIFICATION,
+        AppState.UNDER_REVIEW,
+        AppState.APPROVED,
+        AppState.REJECTED,
+        AppState.CLARIFICATION_REQUIRED,
     ],
     AppState.SUBMITTED_FOR_VERIFICATION: [
         AppState.UNDER_REVIEW,
+        AppState.APPROVED,
+        AppState.REJECTED,
+        AppState.CLARIFICATION_REQUIRED,
     ],
     AppState.UNDER_REVIEW: [
         AppState.APPROVED,
@@ -160,6 +177,9 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
         AppState.INFORMATION_COLLECTION,   # Need more info from citizen
         AppState.DOCUMENT_COLLECTION,      # Need more documents
         AppState.SUBMITTED_FOR_VERIFICATION,  # Citizen resubmitted after clarification
+        AppState.UNDER_REVIEW,
+        AppState.APPROVED,
+        AppState.REJECTED,
     ],
     AppState.APPROVED: [
         AppState.PAYMENT_REQUIRED,         # ONLY path to payment — through approval

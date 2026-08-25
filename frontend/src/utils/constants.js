@@ -37,12 +37,27 @@ export const APP_STATUS = {
 }
 
 export const STATUS_CONFIG = {
-  DRAFT:        { color: '#6b7280', bg: '#f3f4f6', dot: '#9ca3af' },
-  SUBMITTED:    { color: '#4338ca', bg: '#eef2ff', dot: '#6366f1' },
-  UNDER_REVIEW: { color: '#b45309', bg: '#fffbeb', dot: '#f59e0b' },
-  APPROVED:     { color: '#15803d', bg: '#f0fdf4', dot: '#22c55e' },
-  REJECTED:     { color: '#b91c1c', bg: '#fef2f2', dot: '#ef4444' },
-  ESCALATED:    { color: '#7e22ce', bg: '#fdf4ff', dot: '#a855f7' },
+  DRAFT:                      { label: 'Draft', color: '#64748b', bg: '#f1f5f9', dot: '#94a3b8' },
+  INITIATED:                  { label: 'Initiated', color: '#64748b', bg: '#f1f5f9', dot: '#94a3b8' },
+  INFORMATION_COLLECTION:     { label: 'Collecting Info', color: '#d97706', bg: '#fef3c7', dot: '#f59e0b' },
+  DOCUMENT_COLLECTION:        { label: 'Collecting Docs', color: '#d97706', bg: '#fef3c7', dot: '#f59e0b' },
+  OCR_PROCESSING:             { label: 'Processing OCR', color: '#2563eb', bg: '#eff6ff', dot: '#3b82f6' },
+  VALIDATION_COMPLETED:       { label: 'Validated', color: '#0284c7', bg: '#e0f2fe', dot: '#0ea5e9' },
+  READY_FOR_REVIEW:           { label: 'Ready for Review', color: '#0284c7', bg: '#e0f2fe', dot: '#0ea5e9' },
+  FINAL_REVIEW:               { label: 'Final Review', color: '#0284c7', bg: '#e0f2fe', dot: '#0ea5e9' },
+  CONSENT_CONFIRMED:          { label: 'Consent Confirmed', color: '#0284c7', bg: '#e0f2fe', dot: '#0ea5e9' },
+  SUBMITTED:                  { label: 'Submitted', color: '#4f46e5', bg: '#eef2ff', dot: '#6366f1' },
+  SUBMITTED_FOR_VERIFICATION: { label: 'Submitted', color: '#4f46e5', bg: '#eef2ff', dot: '#6366f1' },
+  UNDER_REVIEW:               { label: 'Under Review', color: '#b45309', bg: '#fef3c7', dot: '#f59e0b' },
+  CLARIFICATION_REQUIRED:     { label: 'Clarification Required', color: '#dc2626', bg: '#fee2e2', dot: '#ef4444' },
+  APPROVED:                   { label: 'Approved', color: '#16a34a', bg: '#dcfce7', dot: '#22c55e' },
+  PAYMENT_REQUIRED:           { label: 'Payment Required', color: '#ea580c', bg: '#ffedd5', dot: '#f97316' },
+  PAYMENT_COMPLETED:          { label: 'Payment Completed', color: '#0891b2', bg: '#cffafe', dot: '#06b6d4' },
+  CERTIFICATE_GENERATION:     { label: 'Generating Cert', color: '#0891b2', bg: '#cffafe', dot: '#06b6d4' },
+  CERTIFICATE_READY:          { label: 'Certificate Ready', color: '#16a34a', bg: '#dcfce7', dot: '#22c55e' },
+  COMPLETED:                  { label: 'Completed', color: '#15803d', bg: '#dcfce7', dot: '#16a34a' },
+  REJECTED:                   { label: 'Rejected', color: '#b91c1c', bg: '#fee2e2', dot: '#ef4444' },
+  ESCALATED:                  { label: 'Escalated', color: '#7e22ce', bg: '#f3e8ff', dot: '#a855f7' },
 }
 
 export const CHANNELS = ['WEB', 'WHATSAPP', 'IVR', 'MOBILE']

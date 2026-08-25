@@ -42,7 +42,7 @@ function TimelineSteps({ status }) {
 }
 
 /* ── Application Detail Right Panel ── */
-function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
+function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting, onPayFee, paying }) {
   const navigate = useNavigate()
 
   const { data: fields = {}, isLoading: fieldsLoading } = useQuery({
@@ -62,6 +62,7 @@ function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
   })
 
   const statusUI = getStatusUI(app.status)
+  const progressVal = (app.progress_percent != null && app.progress_percent > 0) ? app.progress_percent : statusUI.progress
   const hasMismatches = documents.some(d => d.mismatch_fields?.length > 0)
   const allResolved   = documents.every(d => !d.mismatch_fields?.length || d.mismatch_fields.every(f => d.mismatch_resolutions?.[f]))
   const canSubmit     = app.status === 'FINAL_REVIEW' && allResolved && (readiness?.can_submit || readiness?.score >= 65)
@@ -79,12 +80,12 @@ function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
       </div>
 
       {/* Progress bar */}
-      {app.progress_percent != null && (
+      {progressVal != null && (
         <div className={styles.detailProgress}>
           <div className={styles.detailProgressBar}>
-            <div className={styles.detailProgressFill} style={{ width: `${app.progress_percent}%` }} />
+            <div className={styles.detailProgressFill} style={{ width: `${progressVal}%` }} />
           </div>
-          <span className={styles.detailProgressLabel}>{app.progress_percent}% complete</span>
+          <span className={styles.detailProgressLabel}>{progressVal}% complete</span>
         </div>
       )}
 
@@ -181,6 +182,17 @@ function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
 
       {/* Action buttons */}
       <div className={styles.detailActions}>
+        {(app.status === 'PAYMENT_REQUIRED' || app.status === 'PAYMENT_PENDING') && (
+          <button
+            className={styles.submitBtn}
+            style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)' }}
+            onClick={onPayFee}
+            disabled={paying}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>payments</span>
+            {paying ? 'Processing Payment…' : 'Pay Statutory Fee (₹50)'}
+          </button>
+        )}
         {canSubmit && (
           <button
             className={styles.submitBtn}
@@ -191,8 +203,13 @@ function ApplicationDetailPanel({ app, onViewDocs, onSubmit, submitting }) {
             {submitting ? 'Submitting…' : 'Send for Verification'}
           </button>
         )}
-        {(app.status === 'APPROVED' || app.status === 'CERTIFICATE_READY' || app.status === 'COMPLETED') && (
-          <button className={styles.downloadBtn}>
+        {(app.status === 'APPROVED' || app.status === 'PAYMENT_COMPLETED' || app.status === 'CERTIFICATE_READY' || app.status === 'COMPLETED') && (
+          <button
+            className={styles.downloadBtn}
+            onClick={() => {
+              window.open(`/api/v1/applications/${app.application_number}/certificate`, '_blank')
+            }}
+          >
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>download</span>
             Download Certificate
           </button>
@@ -219,6 +236,7 @@ export default function MyApplicationsPage() {
   const [filter,       setFilter]       = useState('All Applications')
   const [selectedId,   setSelectedId]   = useState(null)
   const [submitting,   setSubmitting]   = useState(false)
+  const [paying,       setPaying]       = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['myApplications'],
@@ -273,6 +291,24 @@ export default function MyApplicationsPage() {
     }
   }, [selectedApp, queryClient, refetch])
 
+  // Pay fee
+  const handlePayFee = useCallback(async () => {
+    if (!selectedApp) return
+    setPaying(true)
+    try {
+      const citizenId = citizenUser?.phone || citizenUser?.identifier || selectedApp.citizen_ref || 'CITIZEN'
+      await applicationsApi.initiatePayment(selectedApp.id, citizenId, 50.0)
+      toast.success('Payment completed successfully! Certificate generated.')
+      queryClient.invalidateQueries(['myApplications'])
+      queryClient.invalidateQueries(['documents', selectedApp.id])
+      refetch()
+    } catch (err) {
+      toast.error(err.message || 'Payment failed')
+    } finally {
+      setPaying(false)
+    }
+  }, [selectedApp, citizenUser, queryClient, refetch])
+
   // Inject right panel
   useEffect(() => {
     if (selectedApp) {
@@ -283,12 +319,14 @@ export default function MyApplicationsPage() {
           onViewDocs={handleViewDocs}
           onSubmit={handleSubmit}
           submitting={submitting}
+          onPayFee={handlePayFee}
+          paying={paying}
         />
       )
     } else {
       clearRightPanel()
     }
-  }, [selectedApp?.id, submitting])
+  }, [selectedApp?.id, submitting, paying, handlePayFee])
 
   useEffect(() => () => clearRightPanel(), [])
 
@@ -296,9 +334,15 @@ export default function MyApplicationsPage() {
     ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
     : '—'
 
-  const formatService = app =>
-    (app.service_name || (app.service_id || '').replace(/_/g, ' '))
-      .split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+  const formatService = app => {
+    const raw = typeof app.service_name === 'object'
+      ? (app.service_name?.en || Object.values(app.service_name || {})[0] || app.service_id || '')
+      : (app.service_name || (app.service_id || '').replace(/_/g, ' '))
+    return String(raw)
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(' ')
+  }
 
   return (
     <div className={styles.page}>
@@ -362,6 +406,7 @@ export default function MyApplicationsPage() {
         <div className={styles.cardList}>
           {filtered.map(app => {
             const statusUI  = getStatusUI(app.status)
+            const progressVal = (app.progress_percent != null && app.progress_percent > 0) ? app.progress_percent : statusUI.progress
             const icon      = SERVICE_ICONS[app.service_id] || 'description'
             const isSelected = app.id === selectedId
 
@@ -391,13 +436,13 @@ export default function MyApplicationsPage() {
                 </div>
 
                 {/* Progress bar */}
-                {app.progress_percent != null && (
+                {progressVal != null && (
                   <div className={styles.cardProgressWrap}>
                     <div className={styles.cardProgressBar}>
                       <div
                         className={styles.cardProgressFill}
                         style={{
-                          width: `${app.progress_percent}%`,
+                          width: `${progressVal}%`,
                           background: statusUI.color === 'success' ? 'var(--rg-success)'
                             : statusUI.color === 'warning'  ? 'var(--rg-warning)'
                             : statusUI.color === 'error'    ? 'var(--rg-error)'
@@ -405,7 +450,7 @@ export default function MyApplicationsPage() {
                         }}
                       />
                     </div>
-                    <span className={styles.cardProgressPct}>{app.progress_percent}%</span>
+                    <span className={styles.cardProgressPct}>{progressVal}%</span>
                   </div>
                 )}
 
@@ -413,13 +458,35 @@ export default function MyApplicationsPage() {
                 <TimelineSteps status={app.status} />
 
                 {/* Action notice */}
-                {(app.status === 'CLARIFICATION_REQUIRED' || app.status === 'PAYMENT_PENDING') && (
+                {(app.status === 'PAYMENT_REQUIRED' || app.status === 'PAYMENT_PENDING') && (
+                  <div
+                    className={styles.actionNotice}
+                    style={{ background: '#ecfdf5', borderColor: '#10b981', cursor: 'pointer' }}
+                    onClick={(e) => { e.stopPropagation(); setSelectedId(app.id) }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: 18, color: '#059669' }}>
+                      payments
+                    </span>
+                    <span style={{ color: '#065f46', fontWeight: 600 }}>
+                      🎉 Application Approved! Click to pay statutory fee (₹50) & download certificate
+                    </span>
+                  </div>
+                )}
+                {app.status === 'CLARIFICATION_REQUIRED' && (
                   <div className={styles.actionNotice}>
                     <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--rg-warning)' }}>
                       warning
                     </span>
-                    <span>
-                      {app.status === 'PAYMENT_PENDING' ? 'Payment required to proceed' : 'Clarification required'}
+                    <span>Clarification required from officer review</span>
+                  </div>
+                )}
+                {(app.status === 'CERTIFICATE_READY' || app.status === 'COMPLETED') && (
+                  <div className={styles.actionNotice} style={{ background: '#ecfdf5', borderColor: '#10b981' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#059669' }}>
+                      verified
+                    </span>
+                    <span style={{ color: '#065f46', fontWeight: 600 }}>
+                      Official Certificate Issued & Ready for Download
                     </span>
                   </div>
                 )}

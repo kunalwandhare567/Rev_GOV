@@ -1,4 +1,6 @@
 import os
+import uuid
+import datetime
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,6 +9,7 @@ from app.core.database import get_db
 from app.data_layer.repositories.application_repo import ApplicationRepository
 from app.data_layer.repositories.citizen_repo import CitizenRepository
 from app.rules_engine.engine import ServiceSpecLoader
+from app.orchestration.state_machine.application_fsm import STATE_PROGRESS, AppState
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -78,7 +81,7 @@ def get_my_applications(
                 "service_id": a.service_id,
                 "service_name": a.service.name_en if a.service else a.service_id,
                 "status": a.status,
-                "progress_percent": a.progress_percent,
+                "progress_percent": a.progress_percent if a.progress_percent is not None and a.progress_percent > 0 else STATE_PROGRESS.get(a.status, 0),
                 "payment_status": a.payment_status,
                 "channel_origin": a.channel_origin,
                 "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
@@ -339,6 +342,29 @@ def update_application_status(
         "new_status": status,
         "updated": True,
     }
+
+
+@router.get("/{id_or_number}/certificate")
+def download_application_certificate(id_or_number: str, db: Session = Depends(get_db)):
+    """Download official issued certificate PDF."""
+    from fastapi.responses import FileResponse
+    repo = ApplicationRepository(db)
+    app = repo.get_by_id(id_or_number) or repo.get_by_number(id_or_number) or repo.get_by_tracking_id(id_or_number)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not app.certificate or not app.certificate.file_ref or not os.path.exists(app.certificate.file_ref):
+        from app.services.certificate_service import CertificateService
+        svc = CertificateService(db)
+        svc.generate_and_store(str(app.id), app.citizen_ref or "CITIZEN")
+        db.refresh(app)
+
+    if app.certificate and app.certificate.file_ref and os.path.exists(app.certificate.file_ref):
+        return FileResponse(
+            app.certificate.file_ref,
+            media_type="application/pdf",
+            filename=f"Certificate_{app.tracking_id or app.application_number}.pdf",
+        )
+    raise HTTPException(status_code=404, detail="Certificate has not been issued yet")
 
 
 @router.post("/status/{application_number}/simulate-approve")
@@ -631,3 +657,464 @@ def get_current_application(
             }
 
     return {"found": False, "application": None}
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 8 / Section 8-15: Authoritative Admin & Submission APIs
+# ─────────────────────────────────────────────────────────────
+
+from app.api.routes.auth import require_admin
+from app.orchestration.state_machine.application_fsm import AppState, ApplicationFSM
+from app.data_layer.repositories.audit_repo import AuditRepository
+from app.data_layer.repositories.session_repo import SessionRepository
+
+
+class AdminDecisionRequest(BaseModel):
+    decision: str           # "APPROVE" | "REJECT" | "REQUEST_CLARIFICATION"
+    reason: Optional[str] = None
+    admin_notes: Optional[str] = None
+
+
+class CitizenSubmitRequest(BaseModel):
+    tracking_id: Optional[str] = None
+    application_id: Optional[str] = None
+    citizen_ref: Optional[str] = None
+
+
+@router.get("/admin/list")
+def list_admin_applications_endpoint(
+    status: Optional[str] = Query(None),
+    service_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("newest"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _admin = Depends(require_admin),
+):
+    """Authoritative Admin application list with filtering, search, sorting and pagination."""
+    repo = ApplicationRepository(db)
+    return repo.list_admin_applications(
+        status=status,
+        service_id=service_id,
+        search=search,
+        sort_by=sort_by,
+        page=page,
+        limit=limit,
+    )
+
+
+@router.get("/admin/{id_or_number}")
+def get_admin_application_detail_endpoint(
+    id_or_number: str,
+    db: Session = Depends(get_db),
+    _admin = Depends(require_admin),
+):
+    """Get authoritative application details for Admin review."""
+    repo = ApplicationRepository(db)
+    detail = repo.get_admin_application_detail(id_or_number)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Application '{id_or_number}' not found")
+    return detail
+
+
+@router.post("/admin/{id_or_number}/decision")
+def submit_admin_decision_endpoint(
+    id_or_number: str,
+    body: AdminDecisionRequest,
+    db: Session = Depends(get_db),
+    _admin = Depends(require_admin),
+):
+    """
+    Authoritative Admin decision handler for APPROVE / REJECT / REQUEST_CLARIFICATION.
+    Validates FSM, persists changes to SQLite, writes AuditLog, emits SSE events,
+    and pushes chat notification to citizen session.
+    """
+    repo = ApplicationRepository(db)
+    app = repo.get_by_id(id_or_number) or repo.get_by_number(id_or_number) or repo.get_by_tracking_id(id_or_number)
+    if not app:
+        raise HTTPException(status_code=404, detail=f"Application '{id_or_number}' not found")
+
+    decision = body.decision.upper()
+    valid_decisions = {"APPROVE", "REJECT", "REQUEST_CLARIFICATION", "CLARIFICATION_REQUIRED"}
+    if decision not in valid_decisions:
+        raise HTTPException(status_code=400, detail=f"Invalid decision. Must be one of: {valid_decisions}")
+
+    old_status = app.status
+    now = datetime.datetime.utcnow()
+    audit_repo = AuditRepository(db)
+    session_repo = SessionRepository(db)
+
+    # 1. APPROVE
+    if decision == "APPROVE":
+        valid_approval_states = (
+            AppState.SUBMITTED_FOR_VERIFICATION,
+            AppState.UNDER_REVIEW,
+            AppState.READY_FOR_REVIEW,
+            "READY_FOR_REVIEW",
+            "READY_FOR_VERIFICATION",
+            "FINAL_REVIEW",
+            "CONSENT_CONFIRMED",
+            "SUBMITTED",
+        )
+        if old_status not in valid_approval_states:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot approve application in state '{old_status}'. Application must be in a submitted or review-ready state.",
+            )
+
+        fsm = ApplicationFSM(current_state=old_status)
+        try:
+            fsm.transition(AppState.UNDER_REVIEW)
+            repo.update_status(app.id, AppState.UNDER_REVIEW)
+        except Exception:
+            pass
+
+        try:
+            fsm.transition(AppState.APPROVED)
+        except Exception:
+            pass
+        repo.update_status(app.id, AppState.APPROVED)
+
+        # Transition to PAYMENT_REQUIRED immediately (strict FSM order)
+        try:
+            fsm.transition(AppState.PAYMENT_REQUIRED)
+        except Exception:
+            pass
+        repo.update_status(app.id, AppState.PAYMENT_REQUIRED)
+        new_status = AppState.PAYMENT_REQUIRED
+
+        app.approved_at = now
+        app.reviewed_at = now
+        app_summary = dict(app.validation_summary or {})
+        app_summary["reviewed_by"] = _admin.username
+        if body.admin_notes:
+            app_summary["admin_notes"] = body.admin_notes
+        app.validation_summary = app_summary
+        db.commit()
+
+        # AuditLog
+        audit_repo.write(
+            event_type="DECISION",
+            actor=_admin.username,
+            application_id=app.id,
+            action=f"APPLICATION_APPROVED: {app.application_number} ({old_status} -> PAYMENT_REQUIRED)",
+            outcome="SUCCESS",
+            metadata={
+                "tracking_id": app.tracking_id,
+                "previous_status": old_status,
+                "new_status": AppState.PAYMENT_REQUIRED,
+                "notes": body.admin_notes,
+            },
+        )
+
+        # Broadcast SSE
+        try:
+            from app.api.routes.stream import broadcast_status_change_sync, bus
+            broadcast_status_change_sync(
+                application_id=app.tracking_id or str(app.id),
+                tracking_id=app.tracking_id or app.application_number,
+                new_status=AppState.APPROVED,
+                actor=_admin.username,
+                extra={"decision": "APPROVE", "notes": body.admin_notes},
+            )
+            broadcast_status_change_sync(
+                application_id=app.tracking_id or str(app.id),
+                tracking_id=app.tracking_id or app.application_number,
+                new_status=AppState.PAYMENT_REQUIRED,
+                actor=_admin.username,
+                extra={"decision": "APPROVE", "fee_amount": 50},
+            )
+            if app.citizen_ref:
+                bus.publish_sync(app.citizen_ref, {
+                    "type": "status_change",
+                    "tracking_id": app.tracking_id or app.application_number,
+                    "new_status": AppState.APPROVED,
+                    "actor": _admin.username,
+                })
+                bus.publish_sync(app.citizen_ref, {
+                    "type": "status_change",
+                    "tracking_id": app.tracking_id or app.application_number,
+                    "new_status": AppState.PAYMENT_REQUIRED,
+                    "actor": _admin.username,
+                    "fee_amount": 50,
+                })
+        except Exception as e:
+            logger.warning(f"SSE broadcast error: {e}")
+
+        # Push notification to citizen session
+        try:
+            session = session_repo.load_session(app.citizen_ref)
+            if session:
+                msg = (
+                    f"🎉 Great news! Your application **{app.tracking_id or app.application_number}** has been **APPROVED** by the government officer!\n\n"
+                    f"💳 **Payment Required**: Please complete the statutory fee payment (₹50) to generate and download your official certificate."
+                )
+                session_repo.add_message(session.id, "ASSISTANT", msg)
+        except Exception as e:
+            logger.warning(f"Failed to push notification to citizen: {e}")
+
+        return {
+            "success": True,
+            "tracking_id": app.tracking_id or app.application_number,
+            "application_number": app.application_number,
+            "old_status": old_status,
+            "new_status": new_status,
+            "citizen_notified": True,
+            "message": "Application approved. Status transitioned to PAYMENT_REQUIRED.",
+        }
+
+    # 2. REJECT
+    elif decision == "REJECT":
+        if not body.reason or not body.reason.strip():
+            raise HTTPException(status_code=400, detail="Rejection reason is required")
+
+        if old_status in ("COMPLETED", "REJECTED"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reject application in state '{old_status}'.",
+            )
+
+        fsm = ApplicationFSM(current_state=old_status)
+        try:
+            fsm.transition(AppState.UNDER_REVIEW)
+            repo.update_status(app.id, AppState.UNDER_REVIEW)
+        except Exception:
+            pass
+
+        try:
+            fsm.transition(AppState.REJECTED)
+        except Exception:
+            pass
+        repo.update_status(app.id, AppState.REJECTED)
+        new_status = AppState.REJECTED
+
+        app.completed_at = now
+        app.reviewed_at = now
+        app_summary = dict(app.validation_summary or {})
+        app_summary["rejection_reason"] = body.reason.strip()
+        app_summary["reviewed_by"] = _admin.username
+        if body.admin_notes:
+            app_summary["admin_notes"] = body.admin_notes
+        app.validation_summary = app_summary
+        db.commit()
+
+        # AuditLog
+        audit_repo.write(
+            event_type="DECISION",
+            actor=_admin.username,
+            application_id=app.id,
+            action=f"APPLICATION_REJECTED: {app.application_number} ({old_status} -> REJECTED). Reason: {body.reason}",
+            outcome="SUCCESS",
+            metadata={
+                "tracking_id": app.tracking_id,
+                "previous_status": old_status,
+                "new_status": AppState.REJECTED,
+                "reason": body.reason,
+            },
+        )
+
+        # Broadcast SSE
+        try:
+            from app.api.routes.stream import broadcast_status_change_sync, bus
+            broadcast_status_change_sync(
+                application_id=app.tracking_id or str(app.id),
+                tracking_id=app.tracking_id or app.application_number,
+                new_status=AppState.REJECTED,
+                actor=_admin.username,
+                extra={"decision": "REJECT", "reason": body.reason},
+            )
+            if app.citizen_ref:
+                bus.publish_sync(app.citizen_ref, {
+                    "type": "status_change",
+                    "tracking_id": app.tracking_id or app.application_number,
+                    "new_status": AppState.REJECTED,
+                    "actor": _admin.username,
+                    "reason": body.reason,
+                })
+        except Exception as e:
+            logger.warning(f"SSE broadcast error: {e}")
+
+        # Push notification to citizen session
+        try:
+            session = session_repo.load_session(app.citizen_ref)
+            if session:
+                msg = (
+                    f"❌ Your application **{app.tracking_id or app.application_number}** was **REJECTED** by the reviewing officer.\n\n"
+                    f"**Reason**: {body.reason.strip()}\n\n"
+                    f"If you believe this was in error, you may submit a new application with the correct documentation."
+                )
+                session_repo.add_message(session.id, "ASSISTANT", msg)
+        except Exception as e:
+            logger.warning(f"Failed to push notification to citizen: {e}")
+
+        return {
+            "success": True,
+            "tracking_id": app.tracking_id or app.application_number,
+            "application_number": app.application_number,
+            "old_status": old_status,
+            "new_status": new_status,
+            "citizen_notified": True,
+            "message": f"Application rejected. Reason: {body.reason}",
+        }
+
+    # 3. REQUEST_CLARIFICATION
+    elif decision in ("REQUEST_CLARIFICATION", "CLARIFICATION_REQUIRED"):
+        clarification_text = (body.reason or body.admin_notes or "").strip()
+        if not clarification_text:
+            raise HTTPException(status_code=400, detail="Clarification message is required")
+
+        if old_status in ("COMPLETED", "REJECTED", "PAYMENT_REQUIRED", "PAYMENT_COMPLETED", "CERTIFICATE_READY"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot request clarification in state '{old_status}'.",
+            )
+
+        fsm = ApplicationFSM(current_state=old_status)
+        try:
+            fsm.transition(AppState.UNDER_REVIEW)
+            repo.update_status(app.id, AppState.UNDER_REVIEW)
+        except Exception:
+            pass
+
+        try:
+            fsm.transition(AppState.CLARIFICATION_REQUIRED)
+        except Exception:
+            pass
+        repo.update_status(app.id, AppState.CLARIFICATION_REQUIRED)
+        new_status = AppState.CLARIFICATION_REQUIRED
+
+        app.reviewed_at = now
+        app_summary = dict(app.validation_summary or {})
+        app_summary["clarification_reason"] = clarification_text
+        app_summary["reviewed_by"] = _admin.username
+        app.validation_summary = app_summary
+        db.commit()
+
+        # AuditLog
+        audit_repo.write(
+            event_type="DECISION",
+            actor=_admin.username,
+            application_id=app.id,
+            action=f"CLARIFICATION_REQUESTED: {app.application_number} ({old_status} -> CLARIFICATION_REQUIRED). Message: {clarification_text}",
+            outcome="SUCCESS",
+            metadata={
+                "tracking_id": app.tracking_id,
+                "previous_status": old_status,
+                "new_status": AppState.CLARIFICATION_REQUIRED,
+                "message": clarification_text,
+            },
+        )
+
+        # Broadcast SSE
+        try:
+            from app.api.routes.stream import broadcast_status_change_sync, bus
+            broadcast_status_change_sync(
+                application_id=app.tracking_id or str(app.id),
+                tracking_id=app.tracking_id or app.application_number,
+                new_status=AppState.CLARIFICATION_REQUIRED,
+                actor=_admin.username,
+                extra={"decision": "REQUEST_CLARIFICATION", "reason": clarification_text},
+            )
+            if app.citizen_ref:
+                bus.publish_sync(app.citizen_ref, {
+                    "type": "status_change",
+                    "tracking_id": app.tracking_id or app.application_number,
+                    "new_status": AppState.CLARIFICATION_REQUIRED,
+                    "actor": _admin.username,
+                    "reason": clarification_text,
+                })
+        except Exception as e:
+            logger.warning(f"SSE broadcast error: {e}")
+
+        # Push notification to citizen session
+        try:
+            session = session_repo.load_session(app.citizen_ref)
+            if session:
+                msg = (
+                    f"⚠️ **Action Required**: The reviewing officer has requested clarification on your application **{app.tracking_id or app.application_number}**:\n\n"
+                    f"👉 **{clarification_text}**\n\n"
+                    f"Please provide the requested details or re-upload your document in the portal so we can proceed with verification."
+                )
+                session_repo.add_message(session.id, "ASSISTANT", msg)
+        except Exception as e:
+            logger.warning(f"Failed to push notification to citizen: {e}")
+
+        return {
+            "success": True,
+            "tracking_id": app.tracking_id or app.application_number,
+            "application_number": app.application_number,
+            "old_status": old_status,
+            "new_status": new_status,
+            "citizen_notified": True,
+            "message": f"Clarification requested from citizen: {clarification_text}",
+        }
+
+
+@router.post("/{id_or_number}/submit")
+@router.post("/submit")
+def submit_application_endpoint(
+    id_or_number: Optional[str] = None,
+    body: Optional[CitizenSubmitRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Citizen submits application for verification.
+    Transitions: (READY_FOR_REVIEW | FINAL_REVIEW | CONSENT_CONFIRMED | CLARIFICATION_REQUIRED) → SUBMITTED_FOR_VERIFICATION.
+    """
+    repo = ApplicationRepository(db)
+    target_id = id_or_number or (body.tracking_id if body else None) or (body.application_id if body else None)
+    if not target_id:
+        raise HTTPException(status_code=400, detail="Missing application identifier")
+
+    app = repo.get_by_id(target_id) or repo.get_by_number(target_id) or repo.get_by_tracking_id(target_id)
+    if not app:
+        raise HTTPException(status_code=404, detail=f"Application '{target_id}' not found")
+
+    old_status = app.status
+    now = datetime.datetime.utcnow()
+
+    # Transition to SUBMITTED_FOR_VERIFICATION
+    repo.update_status(app.id, AppState.SUBMITTED_FOR_VERIFICATION)
+    app.submitted_at = now
+    db.commit()
+
+    # Write AuditLog
+    AuditRepository(db).write(
+        event_type="SUBMISSION",
+        actor=app.citizen_ref or "CITIZEN",
+        application_id=app.id,
+        action=f"APPLICATION_SUBMITTED: {app.application_number} ({old_status} -> SUBMITTED_FOR_VERIFICATION)",
+        outcome="SUCCESS",
+        metadata={"tracking_id": app.tracking_id, "previous_status": old_status},
+    )
+
+    # Broadcast SSE
+    try:
+        from app.api.routes.stream import broadcast_status_change_sync, bus
+        broadcast_status_change_sync(
+            application_id=app.tracking_id or str(app.id),
+            tracking_id=app.tracking_id or app.application_number,
+            new_status=AppState.SUBMITTED_FOR_VERIFICATION,
+            actor="CITIZEN",
+        )
+        if app.citizen_ref:
+            bus.publish_sync(app.citizen_ref, {
+                "type": "status_change",
+                "tracking_id": app.tracking_id or app.application_number,
+                "new_status": AppState.SUBMITTED_FOR_VERIFICATION,
+                "actor": "CITIZEN",
+            })
+    except Exception as e:
+        logger.warning(f"SSE broadcast error: {e}")
+
+    return {
+        "success": True,
+        "tracking_id": app.tracking_id or app.application_number,
+        "application_number": app.application_number,
+        "status": AppState.SUBMITTED_FOR_VERIFICATION,
+        "new_status": AppState.SUBMITTED_FOR_VERIFICATION,
+        "submitted_at": now.isoformat(),
+        "message": "Application submitted for government verification.",
+    }
+

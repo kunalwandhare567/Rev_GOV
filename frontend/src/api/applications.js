@@ -12,4 +12,26 @@ export const applicationsApi = {
     client.patch(`/applications/status/${appNum}`, { status, note }),
   validateEligibility: (serviceId, slots) =>
     client.post('/applications/validate-eligibility', { service_id: serviceId, slots }),
+
+  // ── Authoritative Admin APIs ──
+  getAdminList: (params = {}) => client.get('/applications/admin/list', { params }),
+  getAdminDetail: (idOrNumber) => client.get(`/applications/admin/${idOrNumber}`),
+  submitDecision: (idOrNumber, decision, reason = '', adminNotes = '') =>
+    client.post(`/applications/admin/${idOrNumber}/decision`, {
+      decision,
+      reason: reason || null,
+      admin_notes: adminNotes || null,
+    }),
+  submitForVerification: (idOrNumber) => client.post(`/applications/${idOrNumber}/submit`),
+
+  // ── Citizen Payment & Certificate APIs ──
+  initiatePayment: (applicationId, citizenIdentifier, amount = 50.0) =>
+    client.post('/payment/initiate', {
+      application_id: applicationId,
+      citizen_identifier: citizenIdentifier,
+      amount,
+      channel: 'WEB',
+      mode: 'MOCK_AUTO',
+    }),
 }
+

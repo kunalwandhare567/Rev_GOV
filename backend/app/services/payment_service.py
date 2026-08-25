@@ -92,6 +92,29 @@ class PaymentService:
             event_data={"txn_id": txn_id, "amount": amount, "mode": "MOCK"},
         )
 
+        # Broadcast SSE event
+        try:
+            from app.api.routes.stream import broadcast_status_change_sync, bus
+            app = self.app_repo.get_by_id(application_id)
+            tracking_id = app.tracking_id or app.application_number if app else application_id
+            broadcast_status_change_sync(
+                application_id=tracking_id,
+                tracking_id=tracking_id,
+                new_status="PAYMENT_COMPLETED",
+                actor="CITIZEN",
+                extra={"txn_id": txn_id, "amount": amount},
+            )
+            if citizen_ref:
+                bus.publish_sync(citizen_ref, {
+                    "type": "status_change",
+                    "tracking_id": tracking_id,
+                    "new_status": "PAYMENT_COMPLETED",
+                    "actor": "CITIZEN",
+                    "txn_id": txn_id,
+                })
+        except Exception as e:
+            logger.warning(f"SSE broadcast failed in payment: {e}")
+
         # Phase 9: Trigger certificate generation immediately after payment
         cert_result = self._trigger_certificate_generation(application_id, citizen_ref)
 

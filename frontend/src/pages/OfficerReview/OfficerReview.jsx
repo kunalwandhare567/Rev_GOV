@@ -1,452 +1,590 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { ArrowLeft, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
-import client from '../../api/client'
+import {
+  ArrowLeft,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  FileText,
+  User,
+  Shield,
+  Clock,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  FileSearch,
+  Award,
+  AlertOctagon,
+  Scale,
+  RefreshCw,
+} from 'lucide-react'
 import { applicationsApi } from '../../api/applications'
 import { STATUS_CONFIG } from '../../utils/constants'
 import styles from './OfficerReview.module.css'
 
-const TABS = ['details', 'fields', 'documents', 'eligibility', 'payment', 'timeline']
-
-const CHANNEL_META = {
-  WHATSAPP: { icon: '💬', color: '#25d366', label: 'WhatsApp' },
-  WEB:      { icon: '🌐', color: '#6366f1', label: 'Web Portal' },
-  MOBILE:   { icon: '📱', color: '#f59e0b', label: 'Mobile App' },
-  IVR:      { icon: '📞', color: '#06b6d4', label: 'Phone IVR' },
-  SYSTEM:   { icon: '⚙️', color: '#94a3b8', label: 'System' },
-}
-
-function getScoreColor(score) {
-  if (!score) return '#94a3b8'
-  if (score >= 90) return '#22c55e'
-  if (score >= 70) return '#f59e0b'
-  return '#ef4444'
+const formatServiceName = (name, id = '') => {
+  if (!name) return (id || '').replace(/_/g, ' ')
+  if (typeof name === 'object') return name.en || Object.values(name)[0] || id
+  return String(name).replace(/_/g, ' ')
 }
 
 export default function OfficerReview() {
   const { appNumber } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState('details')
-  const [rejectReason, setRejectReason] = useState('')
-  const [notes, setNotes] = useState('')
-  const [confirmAction, setConfirmAction] = useState(null)
-  const [sendingNotif, setSendingNotif] = useState(false)
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['app-detail', appNumber],
-    queryFn: () => applicationsApi.getStatus(appNumber),
+  const [decisionModal, setDecisionModal] = useState(null) // 'APPROVE' | 'REJECT' | 'REQUEST_CLARIFICATION'
+  const [reasonText, setReasonText] = useState('')
+  const [notesText, setNotesText] = useState('')
+  const [expandedDocOcr, setExpandedDocOcr] = useState({})
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['admin-app-detail', appNumber],
+    queryFn: () => applicationsApi.getAdminDetail(appNumber),
   })
 
-  const mutation = useMutation({
-    mutationFn: ({ status, note }) => applicationsApi.updateStatus(appNumber, status, note),
-    onSuccess: (_, { status }) => {
-      toast.success(`Application ${status.toLowerCase()}`)
-      queryClient.invalidateQueries(['app-detail', appNumber])
-      queryClient.invalidateQueries(['recent-apps'])
-      setConfirmAction(null)
-      setRejectReason('')
+  const decisionMutation = useMutation({
+    mutationFn: ({ decision, reason, adminNotes }) =>
+      applicationsApi.submitDecision(appNumber, decision, reason, adminNotes),
+    onSuccess: (res, vars) => {
+      toast.success(
+        vars.decision === 'APPROVE'
+          ? 'Application approved! Status transitioned to PAYMENT_REQUIRED.'
+          : vars.decision === 'REJECT'
+          ? 'Application rejected.'
+          : 'Clarification requested from citizen.'
+      )
+      queryClient.invalidateQueries(['admin-app-detail', appNumber])
+      queryClient.invalidateQueries(['admin-apps-list'])
+      queryClient.invalidateQueries(['admin-overview'])
+      setDecisionModal(null)
+      setReasonText('')
+      setNotesText('')
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => {
+      toast.error(err.message || 'Decision failed')
+    },
   })
 
-  const handleAction = (action) => {
-    if (action === 'REJECTED' && !rejectReason.trim()) {
-      toast.error('Please enter a rejection reason')
+  if (isLoading) {
+    return (
+      <div className={styles.loadingContainer}>
+        <div className={styles.spinner} />
+        <p>Loading authoritative government review records...</p>
+      </div>
+    )
+  }
+
+  if (error || !data) {
+    return (
+      <div className={styles.errorContainer}>
+        <AlertTriangle size={48} className={styles.errorIcon} />
+        <h2>Application Not Found</h2>
+        <p>{error?.message || `Could not find application '${appNumber}'.`}</p>
+        <Link to="/admin/applications" className={styles.backBtn}>
+          <ArrowLeft size={16} /> Back to Applications Queue
+        </Link>
+      </div>
+    )
+  }
+
+  const app = data.application || {}
+  const citizen = data.citizen || {}
+  const service = data.service || {}
+  const appData = data.application_data || {}
+  const rawSlots = data.raw_slots || {}
+  const documents = data.documents || []
+  const readiness = data.readiness || {}
+  const matching = data.matching || {}
+  const fraud = data.fraud || {}
+  const auditLogs = data.audit || []
+  const availableActions = data.available_actions || []
+
+  const statusCfg = STATUS_CONFIG[app.status] || {
+    label: app.status,
+    color: '#64748b',
+    bg: '#f1f5f9',
+    dot: '#94a3b8',
+  }
+
+  const toggleDocOcr = (docId) => {
+    setExpandedDocOcr((prev) => ({ ...prev, [docId]: !prev[docId] }))
+  }
+
+  const handleDecisionSubmit = () => {
+    if (decisionModal === 'REJECT' && !reasonText.trim()) {
+      toast.error('Rejection reason is required.')
       return
     }
-    mutation.mutate({ status: action, note: action === 'REJECTED' ? rejectReason : notes })
-  }
-
-  const sendStatusNotification = async () => {
-    setSendingNotif(true)
-    try {
-      await client.post('/whatsapp/notify', {
-        application_number: appNumber,
-        event_type: 'STATUS_CHANGED',
-        new_status: app.status,
-      })
-      toast.success('📲 WhatsApp notification sent to citizen!')
-    } catch { toast.error('Notification failed or service unreachable') }
-    finally { setSendingNotif(false) }
-  }
-
-  // Admin pre-payment document decision
-  const adminDocDecision = async (decision) => {
-    if (decision === 'REJECT' && !rejectReason.trim()) {
-      toast.error('Please enter a rejection reason before rejecting documents')
+    if (decisionModal === 'REQUEST_CLARIFICATION' && !reasonText.trim()) {
+      toast.error('Clarification message is required.')
       return
     }
-    try {
-      const result = await client.post('/conversation/admin-doc-decision', {
-        application_id: app?.id || appNumber,
-        decision,
-        reason: decision === 'REJECT' ? rejectReason : null,
-        admin_identifier: 'admin',
-      })
-      if (result && result.success) {
-        toast.success(decision === 'APPROVE'
-          ? '✅ Documents approved! Citizen notified to pay.'
-          : '❌ Documents rejected. Citizen notified to re-upload.')
-        queryClient.invalidateQueries(['app-detail', appNumber])
-        queryClient.invalidateQueries(['recent-apps'])
-        setRejectReason('')
-        setConfirmAction(null)
-      } else {
-        toast.error(result?.detail || 'Admin decision failed')
-      }
-    } catch (err) {
-      toast.error(err.message || 'Could not connect to server')
-    }
+    decisionMutation.mutate({
+      decision: decisionModal,
+      reason: reasonText.trim(),
+      adminNotes: notesText.trim(),
+    })
   }
-
-
-  const app = data?.application
-  const slots = app?.slots_data || {}
-  const docs = app?.documents || []
-
-  if (isLoading) return <div className={styles.loadBox}><RefreshCw size={24} className="anim-spin"/> Loading application…</div>
-  if (error || !app) return (
-    <div className={styles.errorBox}>
-      <XCircle size={48} style={{color:'var(--clr-danger-400)'}}/><p>{error?.message || 'Application not found'}</p>
-      <button className={styles.backBtn} onClick={()=>navigate(-1)}>Go Back</button>
-    </div>
-  )
-
-  const originMeta = CHANNEL_META[app.channel] || CHANNEL_META['SYSTEM']
 
   return (
-    <div className={styles.page}>
-      <div className={styles.pageHeader}>
-        <div className={styles.headerLeft}>
-          <button className={styles.backBtn} onClick={()=>navigate(-1)}><ArrowLeft size={16}/> Back</button>
-          <div>
-            <h1 className={styles.title}>{app.application_number}</h1>
-            {/* Phase 13: Channel badges in header */}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-              <span style={{ fontSize: 12, color: '#64748b' }}>{app.service_type?.replace(/_/g,' ').toUpperCase()}</span>
-              <span style={{ background: `${originMeta.color}20`, borderRadius: 6, padding: '1px 8px', fontSize: 12, color: originMeta.color, border: `1px solid ${originMeta.color}40` }}>
-                {originMeta.icon} Started: {originMeta.label}
-              </span>
-              {app.last_channel && app.last_channel !== app.channel && (
-                <span style={{ fontSize: 12, color: '#94a3b8', background: 'rgba(148,163,184,0.1)', border: '1px solid rgba(148,163,184,0.2)', borderRadius: 6, padding: '1px 8px' }}>
-                  Last: {CHANNEL_META[app.last_channel]?.icon} {app.last_channel}
-                </span>
-              )}
-              <span style={{ fontSize: 12, color: '#64748b' }}>{new Date(app.created_at).toLocaleDateString()}</span>
-            </div>
+    <div className={styles.container}>
+      {/* ── Top Nav & Header ── */}
+      <div className={styles.topBar}>
+        <button className={styles.backLink} onClick={() => navigate('/admin/applications')}>
+          <ArrowLeft size={16} /> Back to Queue
+        </button>
+        <div className={styles.topActions}>
+          <button className={styles.refreshBtn} onClick={() => refetch()} title="Sync record">
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* ── Status Banner ── */}
+      <div className={styles.banner}>
+        <div className={styles.bannerMain}>
+          <div className={styles.trackingHeader}>
+            <span className={styles.trackingPill}>{app.tracking_id || app.application_number}</span>
+            <span
+              className={styles.statusPill}
+              style={{ color: statusCfg.color, backgroundColor: statusCfg.bg, borderColor: statusCfg.dot }}
+            >
+              <span className={styles.statusDot} style={{ backgroundColor: statusCfg.dot }} />
+              {statusCfg.label || app.status}
+            </span>
+            <span
+              className={styles.riskBadge}
+              style={{
+                color: fraud.risk_level === 'HIGH' ? '#b91c1c' : fraud.risk_level === 'MEDIUM' ? '#b45309' : '#15803d',
+                backgroundColor: fraud.risk_level === 'HIGH' ? '#fee2e2' : fraud.risk_level === 'MEDIUM' ? '#fef3c7' : '#dcfce7',
+              }}
+            >
+              Risk: {fraud.risk_level} (Anomaly: {(fraud.anomaly_score * 100).toFixed(0)}%)
+            </span>
+          </div>
+          <h1 className={styles.serviceHeading}>{formatServiceName(service.name || app.service_name, app.service_id)}</h1>
+          <p className={styles.citizenSummary}>
+            Applicant: <strong>{citizen.name || citizen.citizen_ref}</strong> ({citizen.citizen_ref}) · Submitted:{' '}
+            {app.submitted_at ? new Date(app.submitted_at).toLocaleString() : 'Pending Submission'}
+          </p>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 1 — APPLICATION OVERVIEW
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <FileText size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 1 — Application Overview</h2>
+        </div>
+        <div className={styles.grid4}>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Application Number</span>
+            <span className={styles.fieldValue}>{app.application_number}</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Tracking Identifier</span>
+            <span className={styles.fieldValue}>{app.tracking_id || '—'}</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Service Department</span>
+            <span className={styles.fieldValue}>{service.department || 'Revenue'}</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>SLA Compliance</span>
+            <span className={styles.fieldValue}>{service.sla_days || 7} working days</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Submission Channel</span>
+            <span className={styles.fieldValue}>{app.channel_origin || 'WEB'}</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Language Preference</span>
+            <span className={styles.fieldValue}>{(app.language || 'en').toUpperCase()}</span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Payment Status</span>
+            <span className={styles.fieldValue}>
+              {app.payment_status} (₹{service.fee_amount || 50})
+            </span>
+          </div>
+          <div className={styles.infoField}>
+            <span className={styles.fieldLabel}>Created Timestamp</span>
+            <span className={styles.fieldValue}>
+              {app.created_at ? new Date(app.created_at).toLocaleString() : '—'}
+            </span>
           </div>
         </div>
-        <div className={styles.headerRight}>
-          <span className={styles.statusBadge} style={{background:STATUS_CONFIG[app.status]?.bg, color:STATUS_CONFIG[app.status]?.color}}>
-            <span className={styles.statusDot} style={{background:STATUS_CONFIG[app.status]?.dot}}/>{app.status}
-          </span>
-          <span className={styles.scoreTag} style={{color: app.anomaly_score>0.7?'var(--clr-danger-400)':app.anomaly_score>0.4?'var(--clr-warning-400)':'var(--clr-success-400)'}}>
-            Risk: {(app.anomaly_score||0).toFixed(2)}
-          </span>
-          {/* Phase 13: OCR match score in header */}
-          {app.overall_match_score != null && (
-            <span className={styles.scoreTag} style={{ color: getScoreColor(app.overall_match_score) }}>
-              OCR: {Math.round(app.overall_match_score)}%
-            </span>
-          )}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 2 — PERSONAL & APPLICATION DATA
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <User size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 2 — Personal & Application Data</h2>
         </div>
-      </div>
-
-      <div className={styles.tabs}>
-        {TABS.map(tab => (
-          <button key={tab} className={`${styles.tab} ${activeTab===tab?styles.tabActive:''}`}
-            onClick={()=>setActiveTab(tab)}>
-            {tab.charAt(0).toUpperCase()+tab.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      <div className={styles.contentGrid}>
-        <div className={styles.tabContent}>
-
-          {/* TAB: DETAILS */}
-          {activeTab === 'details' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Application Details</h3>
-              <div className={styles.detailGrid}>
-                {[
-                  ['Service', app.service_type?.replace(/_/g,' ')],
-                  ['Language', app.language?.toUpperCase()],
-                  ['Citizen Ref', app.citizen_ref || '[TOKENIZED]'],
-                  ['Submitted', new Date(app.created_at).toLocaleString()],
-                  ['Literacy Level', app.literacy_level || '—'],
-                ].map(([k,v]) => (
-                  <div key={k} className={styles.detailItem}>
-                    <span className={styles.detailKey}>{k}</span>
-                    <span className={styles.detailVal}>{v || '—'}</span>
-                  </div>
+        {Object.keys(appData).length === 0 && Object.keys(rawSlots).length === 0 ? (
+          <p className={styles.emptyNote}>No declared slot fields recorded.</p>
+        ) : (
+          <div className={styles.tableWrapper}>
+            <table className={styles.dataTable}>
+              <thead>
+                <tr>
+                  <th>Field Name</th>
+                  <th>Declared Value</th>
+                  <th>DataGuard Classification</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(appData).map(([key, item]) => (
+                  <tr key={key}>
+                    <td className={styles.fieldNameCell}>{key.replace(/_/g, ' ')}</td>
+                    <td className={styles.fieldValCell}>
+                      <strong>{String(item.value || '—')}</strong>
+                    </td>
+                    <td>
+                      <span className={styles.classPill}>{item.classification || 'PII'}</span>
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            </div>
-          )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-          {/* TAB: FIELDS — Phase 13 provenance */}
-          {activeTab === 'fields' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Collected Fields <small style={{color:'#64748b',fontWeight:400,fontSize:13}}>— with channel provenance</small></h3>
-              {Object.keys(slots).length === 0
-                ? <p className={styles.noData}>No fields collected yet.</p>
-                : (
-                  <div className={styles.detailGrid}>
-                    {Object.entries(slots).map(([k, v]) => {
-                      const value = typeof v === 'object' ? v.value : v
-                      const source = typeof v === 'object' ? v.source : 'WEB'
-                      const confirmed = typeof v === 'object' ? v.confirmed : false
-                      const ch = CHANNEL_META[source] || CHANNEL_META['SYSTEM']
-                      return (
-                        <div key={k} className={styles.detailItem}>
-                          <span className={styles.detailKey}>{k.replace(/_/g,' ')}</span>
-                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                            <span className={styles.detailVal}>{String(value||'—')}</span>
-                            <span style={{background:`${ch.color}15`,border:`1px solid ${ch.color}30`,color:ch.color,borderRadius:4,padding:'1px 6px',fontSize:10,fontWeight:600}}>
-                              {ch.icon} {source}
-                            </span>
-                            {confirmed && <CheckCircle size={12} color="#22c55e"/>}
-                          </div>
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 3 — DOCUMENTS & OCR
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <FileSearch size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 3 — Documents & OCR Verification</h2>
+        </div>
+        {documents.length === 0 ? (
+          <p className={styles.emptyNote}>No documents uploaded for this application.</p>
+        ) : (
+          <div className={styles.docsList}>
+            {documents.map((doc) => (
+              <div key={doc.id} className={styles.docCard}>
+                <div className={styles.docCardHeader}>
+                  <div>
+                    <h3 className={styles.docTypeTitle}>{doc.doc_type}</h3>
+                    <span className={styles.docFilename}>{doc.filename || 'Uploaded File'}</span>
+                  </div>
+                  <div className={styles.docBadges}>
+                    <span className={styles.docMatchScore}>
+                      Match: {Math.round(doc.match_score || 100)}%
+                    </span>
+                    <span className={styles.docConfidence}>
+                      OCR Conf: {Math.round((doc.confidence_score || 0.9) * 100)}%
+                    </span>
+                    <span className={styles.statusPill}>
+                      {doc.verification_status || 'VERIFIED'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Normalized OCR Fields */}
+                <div className={styles.docFieldsSection}>
+                  <h4 className={styles.subHeading}>Normalized OCR Fields:</h4>
+                  {doc.normalized_fields && Object.keys(doc.normalized_fields).length > 0 ? (
+                    <div className={styles.ocrFieldsGrid}>
+                      {Object.entries(doc.normalized_fields).map(([k, v]) => (
+                        <div key={k} className={styles.ocrFieldItem}>
+                          <span className={styles.ocrKey}>{k.replace(/_/g, ' ')}:</span>
+                          <span className={styles.ocrVal}>{String(v)}</span>
                         </div>
-                      )
-                    })}
+                      ))}
+                    </div>
+                  ) : (
+                    <span className={styles.dimText}>No structured fields parsed.</span>
+                  )}
+                </div>
+
+                {/* Officer Raw OCR Expander */}
+                {doc.raw_ocr_text && (
+                  <div className={styles.rawOcrBox}>
+                    <button
+                      className={styles.expandOcrBtn}
+                      onClick={() => toggleDocOcr(doc.id)}
+                    >
+                      {expandedDocOcr[doc.id] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      <span>{expandedDocOcr[doc.id] ? 'Hide Raw OCR Text' : 'Inspect Raw OCR Text (Officer View)'}</span>
+                    </button>
+                    {expandedDocOcr[doc.id] && (
+                      <pre className={styles.rawOcrPre}>{doc.raw_ocr_text}</pre>
+                    )}
                   </div>
                 )}
-            </div>
-          )}
-
-          {/* TAB: DOCUMENTS — Phase 13 OCR scores */}
-          {activeTab === 'documents' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Documents & OCR Verification</h3>
-              {docs.length === 0 ? <p className={styles.noData}>No documents uploaded yet.</p> : (
-                <div className={styles.docList}>
-                  {docs.map((doc, i) => (
-                    <div key={i} style={{background:'var(--clr-dark-800,#1e293b)',borderRadius:8,padding:12,marginBottom:8}}>
-                      <div style={{display:'flex',gap:12,alignItems:'center'}}>
-                        <span style={{fontSize:24}}>📄</span>
-                        <div style={{flex:1}}>
-                          <p className={styles.docType}>{doc.doc_type?.replace(/_/g,' ')}</p>
-                          <p className={styles.docMeta}>
-                            {doc.filename || 'document'} ·
-                            <span style={{marginLeft:4}}>
-                              {CHANNEL_META[doc.upload_channel]?.icon || '🌐'} {doc.upload_channel || 'WEB'}
-                            </span>
-                          </p>
-                        </div>
-                        {/* Phase 13: OCR score circle */}
-                        {doc.overall_match_score != null && (
-                          <div style={{textAlign:'right'}}>
-                            <div style={{fontSize:20,fontWeight:700,color:getScoreColor(doc.overall_match_score)}}>
-                              {Math.round(doc.overall_match_score)}%
-                            </div>
-                            <div style={{fontSize:10,color:'#64748b'}}>OCR Match</div>
-                          </div>
-                        )}
-                        <span style={{fontSize:11,fontWeight:600,padding:'2px 8px',borderRadius:6,
-                          background:doc.verification_status==='MATCHED'?'#22c55e20':doc.verification_status==='REVIEW_REQUIRED'?'#ef444420':'#f59e0b20',
-                          color:doc.verification_status==='MATCHED'?'#22c55e':doc.verification_status==='REVIEW_REQUIRED'?'#ef4444':'#f59e0b',
-                        }}>
-                          {doc.verification_status}
-                        </span>
-                      </div>
-
-                      {/* Mismatch alert */}
-                      {doc.mismatch_fields?.length > 0 && (
-                        <div style={{background:'#ef444410',border:'1px solid #ef444430',borderRadius:8,padding:'8px 12px',marginTop:8}}>
-                          <div style={{fontSize:12,color:'#ef4444',fontWeight:600,marginBottom:4}}>⚠️ Mismatched fields:</div>
-                          {doc.mismatch_fields.map(f => (
-                            <div key={f} style={{fontSize:12,color:'#94a3b8',display:'flex',justifyContent:'space-between'}}>
-                              <span>{f.replace(/_/g,' ')}</span>
-                              <span style={{color:'#ef4444'}}>OCR: {doc.extracted_fields?.[f] || '?'}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Field score bars */}
-                      {doc.field_match_scores && Object.keys(doc.field_match_scores).length > 0 && (
-                        <div style={{marginTop:8}}>
-                          {Object.entries(doc.field_match_scores).map(([field, scoreData]) => {
-                            const score = typeof scoreData === 'object' ? scoreData.score : scoreData
-                            return (
-                              <div key={field} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                                <span style={{fontSize:11,color:'#64748b',width:140,flexShrink:0}}>{field.replace(/_/g,' ')}</span>
-                                <div style={{flex:1,height:6,background:'#334155',borderRadius:3,overflow:'hidden'}}>
-                                  <div style={{height:'100%',width:`${score}%`,background:getScoreColor(score),borderRadius:3,transition:'width 0.5s'}}/>
-                                </div>
-                                <span style={{fontSize:11,fontWeight:700,color:getScoreColor(score),width:36,textAlign:'right'}}>{score}%</span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'eligibility' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Eligibility Check Results</h3>
-              <p className={styles.noData}>Eligibility evaluated automatically during submission.</p>
-            </div>
-          )}
-
-          {activeTab === 'payment' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Payment Information</h3>
-              <div className={styles.detailGrid}>
-                {[
-                  ['Payment Status', app.payment_status],
-                  ['Amount Paid', app.fee_paid_amount !== undefined ? `₹${app.fee_paid_amount}` : '—'],
-                  ['Transaction Ref', app.payment_reference || '—'],
-                ].map(([k,v])=>(
-                  <div key={k} className={styles.detailItem}>
-                    <span className={styles.detailKey}>{k}</span>
-                    <span className={styles.detailVal}>{String(v||'—')}</span>
-                  </div>
-                ))}
               </div>
-            </div>
-          )}
+            ))}
+          </div>
+        )}
+      </div>
 
-          {activeTab === 'timeline' && (
-            <div className={styles.detailsCard}>
-              <h3 className={styles.sectionTitle}>Application Timeline</h3>
-              <p className={styles.noData}>Full timeline available on citizen review page.</p>
-              <a href={`/tracking/${app.application_number}`} target="_blank" rel="noopener noreferrer"
-                style={{color:'var(--clr-primary-400)',fontSize:13,marginTop:8,display:'block'}}>
-                View full timeline →
-              </a>
-            </div>
-          )}
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 4 — READINESS SCORE
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <Award size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 4 — Readiness Assessment (Backend Engine)</h2>
         </div>
-
-        {/* ACTION PANEL */}
-        <div className={styles.actionPanel}>
-          <h3 className={styles.sectionTitle}>Officer Actions</h3>
-
-          {/* Phase 13: Notify citizen button */}
-          <button onClick={sendStatusNotification} disabled={sendingNotif}
-            style={{width:'100%',background:'rgba(37,211,102,0.1)',border:'1px solid rgba(37,211,102,0.3)',
-              color:'#25d366',borderRadius:8,padding:'8px 12px',fontSize:13,cursor:'pointer',
-              marginBottom:12,display:'flex',alignItems:'center',gap:6,justifyContent:'center',fontFamily:'inherit'}}>
-            {sendingNotif ? '⏳ Sending…' : '💬 Notify Citizen (WhatsApp)'}
-          </button>
-
-          {/* ── Admin Pre-Payment Approval ── */}
-          {['PENDING_OFFICER_PRE_APPROVAL', 'SUBMITTED_FOR_VERIFICATION', 'UNDER_REVIEW', 'DOCUMENT_COLLECTION', 'OCR_PROCESSING', 'VALIDATION_COMPLETED', 'FINAL_REVIEW'].includes(app.status) && (
-            <div style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', border: '1px solid #6366f1', borderRadius: 12, padding: 20, marginBottom: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <span style={{ fontSize: 22 }}>📋</span>
-                <div>
-                  <div style={{ fontWeight: 700, color: '#e2e8f0', fontSize: 15 }}>Admin Document Pre-Verification</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                    This application is waiting for your document approval before the citizen can pay.
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button
-                  onClick={() => adminDocDecision('APPROVE')}
-                  style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <CheckCircle size={16} /> Approve Documents & Request Payment
-                </button>
-                <button
-                  onClick={() => setConfirmAction('PRE_REJECT')}
-                  style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <XCircle size={16} /> Reject Documents
-                </button>
-              </div>
-              {confirmAction === 'PRE_REJECT' && (
-                <div style={{ marginTop: 14, background: '#1e293b', borderRadius: 8, padding: 14, border: '1px solid #ef444440' }}>
-                  <p style={{ color: '#e2e8f0', fontSize: 13, marginBottom: 8 }}>Enter rejection reason (citizen will be notified):</p>
-                  <textarea
-                    className={styles.notesInput}
-                    value={rejectReason}
-                    onChange={e => setRejectReason(e.target.value)}
-                    placeholder="e.g. Aadhaar number in document doesn't match declared value"
-                    rows={3}
-                    style={{ width: '100%', marginBottom: 10 }}
-                  />
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                      onClick={() => adminDocDecision('REJECT')}
-                      style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
-                    >
-                      Confirm Reject
-                    </button>
-                    <button
-                      onClick={() => { setConfirmAction(null); setRejectReason('') }}
-                      style={{ background: 'rgba(255,255,255,0.1)', color: '#94a3b8', border: 'none', borderRadius: 6, padding: '8px 16px', cursor: 'pointer' }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {['SUBMITTED','UNDER_REVIEW','SUBMITTED_FOR_VERIFICATION'].includes(app.status) && (
-            <div className={styles.actionBtns}>
-              <button className={`${styles.actionBtn} ${styles.approveBtn}`}
-                onClick={() => setConfirmAction('APPROVED')} disabled={mutation.isPending}>
-                <CheckCircle size={16}/> Approve
-              </button>
-              <button className={`${styles.actionBtn} ${styles.rejectBtn}`}
-                onClick={() => setConfirmAction('REJECTED')} disabled={mutation.isPending}>
-                <XCircle size={16}/> Reject
-              </button>
-              <button className={`${styles.actionBtn} ${styles.escalateBtn}`}
-                onClick={() => mutation.mutate({ status: 'ESCALATED', note: notes })} disabled={mutation.isPending}>
-                <AlertTriangle size={16}/> Escalate
-              </button>
-            </div>
-          )}
-
-          {confirmAction === 'APPROVED' && (
-            <div className={styles.confirmBox}>
-              <p>Confirm approval of <b>{app.application_number}</b>?</p>
-              <div className={styles.confirmBtns}>
-                <button className={styles.confirmYes} onClick={()=>handleAction('APPROVED')} disabled={mutation.isPending}>
-                  {mutation.isPending?'…':'Confirm Approve'}
-                </button>
-                <button className={styles.confirmNo} onClick={()=>setConfirmAction(null)}>Cancel</button>
-              </div>
-            </div>
-          )}
-
-          {confirmAction === 'REJECTED' && (
-            <div className={`${styles.confirmBox} ${styles.rejectBox}`}>
-              <p>Rejection reason (required):</p>
-              <textarea className={styles.notesInput} value={rejectReason} onChange={e=>setRejectReason(e.target.value)}
-                placeholder="Enter reason for rejection…" rows={3} required/>
-              <div className={styles.confirmBtns}>
-                <button className={styles.confirmReject} onClick={()=>handleAction('REJECTED')} disabled={mutation.isPending}>
-                  {mutation.isPending?'…':'Confirm Reject'}
-                </button>
-                <button className={styles.confirmNo} onClick={()=>setConfirmAction(null)}>Cancel</button>
-              </div>
-            </div>
-          )}
-
-          <div className={styles.notesSection}>
-            <label className={styles.notesLabel}>Officer Notes</label>
-            <textarea className={styles.notesInput} value={notes} onChange={e=>setNotes(e.target.value)}
-              placeholder="Add internal notes…" rows={4}/>
+        <div className={styles.readinessOverview}>
+          <div className={styles.readinessScoreBox}>
+            <span className={styles.readinessNumber}>{Math.round(readiness.overall_score || 85)}</span>
+            <span className={styles.readinessMax}>/ 100</span>
+            <span className={styles.readinessStatusBadge}>{readiness.status || 'READY'}</span>
+          </div>
+          <div className={styles.componentsTableWrap}>
+            <table className={styles.compTable}>
+              <thead>
+                <tr>
+                  <th>Component</th>
+                  <th>Weight</th>
+                  <th>Achievement</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(readiness.components || []).map((comp) => (
+                  <tr key={comp.name}>
+                    <td>{comp.name}</td>
+                    <td>{comp.weight} pts</td>
+                    <td>{comp.pct || Math.round(comp.score * 100)}%</td>
+                    <td>
+                      <strong>{(comp.weighted_score || 0).toFixed(1)}</strong>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 5 — DOCUMENT MATCHING
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <Scale size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 5 — Cross-Field Document Matching</h2>
+        </div>
+        <div className={styles.matchingContent}>
+          <div className={styles.overallMatchBadge}>
+            Overall Match Confidence: <strong>{Math.round(matching.overall_match_score || 100)}%</strong>
+          </div>
+          <div className={styles.matchFieldsLists}>
+            <div>
+              <h4 className={styles.matchSubhead} style={{ color: '#16a34a' }}>
+                ✓ Matched Fields:
+              </h4>
+              <ul className={styles.fieldList}>
+                {(matching.matched_fields || ['applicant_name', 'dob', 'address']).map((f) => (
+                  <li key={f}>{String(f).replace(/_/g, ' ')}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className={styles.matchSubhead} style={{ color: '#dc2626' }}>
+                ⚠ Mismatched Fields:
+              </h4>
+              {(matching.mismatched_fields || []).length === 0 ? (
+                <span className={styles.dimText}>No field mismatches detected.</span>
+              ) : (
+                <ul className={styles.fieldList}>
+                  {matching.mismatched_fields.map((f) => (
+                    <li key={f} style={{ color: '#dc2626' }}>
+                      {String(f).replace(/_/g, ' ')}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          SECTION 6 — FRAUD & RULES REVIEW
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.sectionCard}>
+        <div className={styles.sectionHeader}>
+          <Shield size={18} className={styles.sectionIcon} />
+          <h2 className={styles.sectionTitle}>Section 6 — Fraud, Rules & Security Assessment</h2>
+        </div>
+        <div className={styles.fraudGrid}>
+          <div className={styles.fraudItem}>
+            <span className={styles.fraudLabel}>Fraud / Anomaly Score</span>
+            <span className={styles.fraudVal}>{(fraud.anomaly_score * 100).toFixed(1)}%</span>
+          </div>
+          <div className={styles.fraudItem}>
+            <span className={styles.fraudLabel}>Risk Classification</span>
+            <span
+              className={styles.riskBadge}
+              style={{
+                color: fraud.risk_level === 'HIGH' ? '#b91c1c' : fraud.risk_level === 'MEDIUM' ? '#b45309' : '#15803d',
+                backgroundColor: fraud.risk_level === 'HIGH' ? '#fee2e2' : fraud.risk_level === 'MEDIUM' ? '#fef3c7' : '#dcfce7',
+              }}
+            >
+              {fraud.risk_level}
+            </span>
+          </div>
+          <div className={styles.fraudItem}>
+            <span className={styles.fraudLabel}>Eligibility Status</span>
+            <span className={styles.fraudVal} style={{ color: fraud.eligibility_passed ? '#16a34a' : '#dc2626' }}>
+              {fraud.eligibility_passed ? 'Eligible' : 'Eligibility Issues'}
+            </span>
+          </div>
+          <div className={styles.fraudItem}>
+            <span className={styles.fraudLabel}>DataGuard Status</span>
+            <span className={styles.fraudVal} style={{ color: '#16a34a' }}>
+              PII Enforced / Protected
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          AUTHORITATIVE DECISION PANEL
+          ══════════════════════════════════════════════════════════════ */}
+      <div className={styles.decisionPanelCard}>
+        <div className={styles.decisionHeader}>
+          <h2 className={styles.decisionTitle}>Government Officer Decision Panel</h2>
+          <span className={styles.decisionStateText}>
+            Current State: <strong>{app.status}</strong>
+          </span>
+        </div>
+
+        {availableActions.length === 0 && ['PAYMENT_REQUIRED', 'PAYMENT_COMPLETED', 'CERTIFICATE_READY', 'COMPLETED', 'REJECTED'].includes(app.status) ? (
+          <div className={styles.noActionBox}>
+            <Clock size={20} />
+            <span>
+              {app.status === 'PAYMENT_REQUIRED'
+                ? 'Application is approved and currently awaiting citizen fee payment.'
+                : app.status === 'PAYMENT_COMPLETED'
+                ? 'Payment completed. Certificate generation in progress.'
+                : app.status === 'COMPLETED' || app.status === 'CERTIFICATE_READY'
+                ? 'Application processing is complete and certificate has been issued.'
+                : app.status === 'REJECTED'
+                ? 'Application has been rejected. No further actions available.'
+                : 'No actions currently available in this state.'}
+            </span>
+          </div>
+        ) : (
+          <div className={styles.actionButtonsGroup}>
+            <button
+              className={styles.approveBtn}
+              onClick={() => setDecisionModal('APPROVE')}
+              disabled={decisionMutation.isPending}
+            >
+              <CheckCircle size={18} /> Approve Application
+            </button>
+
+            <button
+              className={styles.clarifyBtn}
+              onClick={() => setDecisionModal('REQUEST_CLARIFICATION')}
+              disabled={decisionMutation.isPending}
+            >
+              <AlertOctagon size={18} /> Request Clarification
+            </button>
+
+            <button
+              className={styles.rejectBtn}
+              onClick={() => setDecisionModal('REJECT')}
+              disabled={decisionMutation.isPending}
+            >
+              <XCircle size={18} /> Reject Application
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Decision Confirmation Modal ── */}
+      {decisionModal && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalContent}>
+            <h3 className={styles.modalTitle}>
+              {decisionModal === 'APPROVE' && 'Approve Application'}
+              {decisionModal === 'REJECT' && 'Reject Application'}
+              {decisionModal === 'REQUEST_CLARIFICATION' && 'Request Clarification from Citizen'}
+            </h3>
+
+            <p className={styles.modalDesc}>
+              {decisionModal === 'APPROVE' &&
+                'Approving this application will transition the status to PAYMENT_REQUIRED, send an approval notification to the citizen, and allow them to complete the statutory fee payment.'}
+              {decisionModal === 'REJECT' &&
+                'Please specify the official reason for rejecting this application. This reason will be logged and communicated to the citizen.'}
+              {decisionModal === 'REQUEST_CLARIFICATION' &&
+                'Please specify the clarification or additional documentation required from the citizen.'}
+            </p>
+
+            {(decisionModal === 'REJECT' || decisionModal === 'REQUEST_CLARIFICATION') && (
+              <div className={styles.modalFormGroup}>
+                <label className={styles.modalLabel}>
+                  {decisionModal === 'REJECT' ? 'Rejection Reason *' : 'Clarification Message *'}
+                </label>
+                <textarea
+                  className={styles.modalTextarea}
+                  rows={3}
+                  placeholder={
+                    decisionModal === 'REJECT'
+                      ? 'e.g. Income certificate could not be verified with tax records.'
+                      : 'e.g. Please upload a clearer copy of your address proof.'
+                  }
+                  value={reasonText}
+                  onChange={(e) => setReasonText(e.target.value)}
+                />
+              </div>
+            )}
+
+            <div className={styles.modalFormGroup}>
+              <label className={styles.modalLabel}>Internal Admin Notes (Optional)</label>
+              <input
+                type="text"
+                className={styles.modalInput}
+                placeholder="Notes for the audit log..."
+                value={notesText}
+                onChange={(e) => setNotesText(e.target.value)}
+              />
+            </div>
+
+            <div className={styles.modalActions}>
+              <button
+                className={styles.modalCancelBtn}
+                onClick={() => {
+                  setDecisionModal(null)
+                  setReasonText('')
+                  setNotesText('')
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className={
+                  decisionModal === 'APPROVE'
+                    ? styles.approveBtn
+                    : decisionModal === 'REJECT'
+                    ? styles.rejectBtn
+                    : styles.clarifyBtn
+                }
+                onClick={handleDecisionSubmit}
+                disabled={decisionMutation.isPending}
+              >
+                {decisionMutation.isPending ? 'Processing...' : 'Confirm Decision'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

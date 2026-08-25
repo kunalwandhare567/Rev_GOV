@@ -60,10 +60,29 @@ class ChannelIdentityRepository:
             verified=verified,
             verified_at=datetime.datetime.utcnow() if verified else None,
         )
-        self.db.add(ci)
-        self.db.commit()
-        self.db.refresh(ci)
-        return ci
+        try:
+            self.db.add(ci)
+            self.db.commit()
+            self.db.refresh(ci)
+            return ci
+        except Exception:
+            self.db.rollback()
+            existing = (
+                self.db.query(ChannelIdentity)
+                .filter(
+                    ChannelIdentity.channel == channel,
+                    ChannelIdentity.identifier_hash == h,
+                )
+                .first()
+            )
+            if existing:
+                existing.citizen_ref = citizen_ref
+                existing.identifier_type = identifier_type
+                existing.verified = verified
+                self.db.commit()
+                self.db.refresh(existing)
+                return existing
+            raise
 
     def get_by_citizen(self, citizen_ref: str) -> list[ChannelIdentity]:
         return (

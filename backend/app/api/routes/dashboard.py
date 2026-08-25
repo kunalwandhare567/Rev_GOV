@@ -63,6 +63,14 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
 
     return {
         "timestamp": datetime.datetime.utcnow().isoformat(),
+        "total_applications": app_stats["total_applications"],
+        "submitted": app_stats["by_status"].get("SUBMITTED_FOR_VERIFICATION", 0),
+        "under_review": app_stats["by_status"].get("UNDER_REVIEW", 0),
+        "clarification_required": app_stats["by_status"].get("CLARIFICATION_REQUIRED", 0),
+        "approved": app_stats["by_status"].get("APPROVED", 0),
+        "rejected": app_stats["by_status"].get("REJECTED", 0),
+        "payment_required": app_stats["by_status"].get("PAYMENT_REQUIRED", 0),
+        "completed": app_stats["by_status"].get("COMPLETED", 0),
         "stats": {
             "active_sessions":   active_sessions,
             "submitted_today":   app_stats["submitted_today"],
@@ -78,7 +86,6 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         "by_service":  app_stats["by_service"],
         "by_language": lang_dist,
         "by_channel":  channel_dist,
-        "total_applications": sum(app_stats["by_status"].values()),
     }
 
 

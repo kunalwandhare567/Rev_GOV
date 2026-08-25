@@ -26,12 +26,16 @@ class SessionRepository:
 
     def load_session(self, citizen_ref: str) -> Optional[ConversationSession]:
         """Load the most recent active session for a citizen."""
+        from sqlalchemy import or_
         cutoff = datetime.datetime.utcnow()
         session = (
             self.db.query(ConversationSession)
             .filter(
                 ConversationSession.citizen_ref == citizen_ref,
-                ConversationSession.expires_at > cutoff,
+                or_(
+                    ConversationSession.expires_at > cutoff,
+                    ConversationSession.expires_at.is_(None),
+                ),
             )
             .order_by(ConversationSession.updated_at.desc())
             .first()

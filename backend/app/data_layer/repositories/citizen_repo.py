@@ -5,8 +5,12 @@ import uuid
 import random
 import hashlib
 import datetime
+import logging
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.models.db_models import Citizen
+
+logger = logging.getLogger(__name__)
 
 
 class CitizenRepository:
@@ -58,15 +62,17 @@ class CitizenRepository:
         """Look up citizen by normalized identifier hash via ChannelIdentity or direct email/phone."""
         if not identifier:
             return None
-        # Try direct match first if phone or email
+        normalized = self._normalize(identifier)
+        # Try direct match first if phone, email, or citizen_ref
         direct = self.db.query(Citizen).filter(
-            (Citizen.phone == identifier) | (Citizen.email == identifier) | (Citizen.citizen_ref == identifier)
+            (Citizen.phone == identifier) | (Citizen.email == identifier) | (Citizen.citizen_ref == identifier) |
+            (Citizen.phone == normalized) | (Citizen.email == normalized)
         ).first()
         if direct:
             return direct
 
         from app.models.db_models import ChannelIdentity
-        h = self._hash(self._normalize(identifier))
+        h = self._hash(normalized)
         ci = self.db.query(ChannelIdentity).filter(ChannelIdentity.identifier_hash == h).first()
         if ci:
             return self.get_by_ref(ci.citizen_ref)
@@ -76,9 +82,10 @@ class CitizenRepository:
                           raw_identifier: str = None, preferred_language: str = None,
                           preferred_channel: str = None, name: str = None) -> Citizen:
         """
-        Get-or-create citizen by any channel identifier.
+        Get-or-create citizen by any channel identifier idempotently.
         Normalizes 'whatsapp:XXXX' → 'XXXX' before hashing.
-        Uses ChannelIdentity table for lookup.
+        Reuses existing channel identity and citizen_ref without violating unique constraints.
+        Handles race conditions gracefully.
         """
         from app.models.db_models import ChannelIdentity
         ident = identifier or raw_identifier or "default_user"
@@ -87,14 +94,59 @@ class CitizenRepository:
         h = self._hash(normalized)
         channel = preferred_channel or ("WHATSAPP" if ident.lower().startswith("whatsapp:") else "WEB")
 
-        # Look up by identity hash or direct phone/email
+        # 1. Look up by direct phone/email or existing ChannelIdentity
         citizen = self.get_by_identifier(ident)
         if citizen:
             if preferred_channel and citizen.preferred_channel != preferred_channel:
                 self.update_channel(citizen.citizen_ref, preferred_channel)
             return citizen
 
-        # Create new citizen
+        # 2. Check if a ChannelIdentity already exists for this (channel, identifier_hash) or hash
+        existing_ci = (
+            self.db.query(ChannelIdentity)
+            .filter(
+                ChannelIdentity.channel == channel,
+                ChannelIdentity.identifier_hash == h,
+            )
+            .first()
+        )
+        if not existing_ci:
+            existing_ci = (
+                self.db.query(ChannelIdentity)
+                .filter(ChannelIdentity.identifier_hash == h)
+                .first()
+            )
+
+        if existing_ci:
+            # Reuse existing citizen_ref; do NOT insert a duplicate ChannelIdentity
+            existing_citizen = self.get_by_ref(existing_ci.citizen_ref)
+            if existing_citizen:
+                if preferred_channel and existing_citizen.preferred_channel != preferred_channel:
+                    self.update_channel(existing_citizen.citizen_ref, preferred_channel)
+                return existing_citizen
+
+            # Citizen record was missing for existing identity — recreate Citizen with same citizen_ref
+            citizen = Citizen(
+                citizen_ref=existing_ci.citizen_ref,
+                name=name,
+                phone=normalized if "@" not in normalized and normalized.replace("+", "").isdigit() else None,
+                email=normalized if "@" in normalized else None,
+                preferred_language=lang,
+                preferred_channel=channel,
+            )
+            self.db.add(citizen)
+            try:
+                self.db.commit()
+                self.db.refresh(citizen)
+                return citizen
+            except Exception as e:
+                logger.warning(f"Error persisting citizen for existing identity: {e}")
+                self.db.rollback()
+                c = self.get_by_ref(existing_ci.citizen_ref)
+                if c:
+                    return c
+
+        # 3. Create new citizen and link new ChannelIdentity with race-condition safety
         citizen = Citizen(
             citizen_ref=self._next_citizen_id(),
             name=name,
@@ -104,9 +156,8 @@ class CitizenRepository:
             preferred_channel=channel,
         )
         self.db.add(citizen)
-        self.db.flush()  # get citizen_ref without commit
+        self.db.flush()  # obtain citizen_ref
 
-        # Link identity
         identity = ChannelIdentity(
             citizen_ref=citizen.citizen_ref,
             channel=channel,
@@ -115,9 +166,53 @@ class CitizenRepository:
             verified=True,
         )
         self.db.add(identity)
-        self.db.commit()
-        self.db.refresh(citizen)
-        return citizen
+
+        try:
+            self.db.commit()
+            self.db.refresh(citizen)
+            return citizen
+        except (IntegrityError, Exception) as e:
+            # Handle concurrent creation race condition
+            logger.info(f"Handled concurrent citizen creation collision for hash {h[:8]}: {e}")
+            self.db.rollback()
+
+            # Re-query existing ChannelIdentity created concurrently
+            ci_race = (
+                self.db.query(ChannelIdentity)
+                .filter(
+                    ChannelIdentity.channel == channel,
+                    ChannelIdentity.identifier_hash == h,
+                )
+                .first()
+            )
+            if not ci_race:
+                ci_race = (
+                    self.db.query(ChannelIdentity)
+                    .filter(ChannelIdentity.identifier_hash == h)
+                    .first()
+                )
+
+            if ci_race:
+                c = self.get_by_ref(ci_race.citizen_ref)
+                if c:
+                    return c
+                c = Citizen(
+                    citizen_ref=ci_race.citizen_ref,
+                    name=name,
+                    phone=normalized if "@" not in normalized and normalized.replace("+", "").isdigit() else None,
+                    email=normalized if "@" in normalized else None,
+                    preferred_language=lang,
+                    preferred_channel=channel,
+                )
+                self.db.add(c)
+                self.db.commit()
+                self.db.refresh(c)
+                return c
+
+            fallback = self.get_by_identifier(ident)
+            if fallback:
+                return fallback
+            raise
 
 
 

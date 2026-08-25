@@ -196,8 +196,27 @@ class ReadinessEngine:
         dc = self._score_document_coverage(required_docs, uploaded_docs)
         components.append(dc)
         if dc.score < 1.0:
-            missing_docs = [d for d in required_docs if d not in uploaded_docs]
-            blocking_issues.append(f"Missing documents: {', '.join(missing_docs)}")
+            uploaded_doc_types = [
+                (d.get("doc_type") or d.get("document_type") or d.get("type") or str(d)) if isinstance(d, dict)
+                else (getattr(d, "doc_type", None) or str(d))
+                for d in (uploaded_docs or [])
+            ]
+            uploaded_set = set(filter(None, uploaded_doc_types))
+            missing_docs = []
+            for req in (required_docs or []):
+                if isinstance(req, dict):
+                    req_type = req.get("type") or req.get("doc_type") or req.get("name") or "DOCUMENT"
+                    accepted = req.get("accepted") or []
+                    aliases = [req_type] + list(accepted)
+                else:
+                    req_type = str(req)
+                    aliases = [req_type]
+
+                if not any(alias in uploaded_set for alias in aliases):
+                    missing_docs.append(req_type.replace("_", " "))
+
+            if missing_docs:
+                blocking_issues.append(f"Missing documents: {', '.join(missing_docs)}")
 
         # ── Component 3: OCR Validation (20 pts) ──
         ocr_c = self._score_ocr_validation(ocr_results or [])
@@ -276,8 +295,8 @@ class ReadinessEngine:
 
     def _score_document_coverage(
         self,
-        required_docs: List[str],
-        uploaded_docs: List[str]
+        required_docs: List[Any],
+        uploaded_docs: List[Any]
     ) -> ReadinessComponent:
         """Score how many required documents are uploaded."""
         weight = self.COMPONENT_WEIGHTS["Document Coverage"]
@@ -285,13 +304,33 @@ class ReadinessEngine:
         if not required_docs:
             return ReadinessComponent("Document Coverage", weight, 1.0, float(weight))
 
-        uploaded_set = set(uploaded_docs)
-        covered = [d for d in required_docs if d in uploaded_set]
-        score = len(covered) / len(required_docs)
+        uploaded_doc_types = [
+            (d.get("doc_type") or d.get("document_type") or d.get("type") or str(d)) if isinstance(d, dict)
+            else (getattr(d, "doc_type", None) or str(d))
+            for d in (uploaded_docs or [])
+        ]
+        uploaded_set = set(filter(None, uploaded_doc_types))
+
+        covered = []
+        missing = []
+        for req in (required_docs or []):
+            if isinstance(req, dict):
+                req_type = req.get("type") or req.get("doc_type") or req.get("name") or "DOCUMENT"
+                accepted = req.get("accepted") or []
+                aliases = [req_type] + list(accepted)
+            else:
+                req_type = str(req)
+                aliases = [req_type]
+
+            if any(alias in uploaded_set for alias in aliases):
+                covered.append(req_type)
+            else:
+                missing.append(req_type)
+
+        score = len(covered) / len(required_docs) if required_docs else 1.0
 
         issues = []
         if score < 1.0:
-            missing = [d for d in required_docs if d not in uploaded_set]
             issues = [f"Not uploaded: {d.replace('_', ' ')}" for d in missing]
 
         return ReadinessComponent(

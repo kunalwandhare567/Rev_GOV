@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import useChatStore from '../../store/chatStore'
 import useUIStore from '../../store/uiStore'
 import useAuthStore from '../../store/authStore'
+import client from '../../api/client'
 import { conversationApi } from '../../api/conversation'
 import { applicationsApi } from '../../api/applications'
 import { t, LANGUAGE_NAMES } from '../../i18n'
@@ -326,6 +327,36 @@ export default function CitizenChat() {
   
   // Phase 13: Real-time notification from backend
   const [sseNotification, setSseNotification] = useState(null) // { type, message, status }
+  const [paying, setPaying] = useState(false)
+
+  const handlePayNow = async () => {
+    setPaying(true)
+    try {
+      const res = await client.post('/payment/initiate', {
+        application_id: store.applicationId || store.applicationNumber,
+        citizen_identifier: store.citizenIdentifier || resolvedId,
+        amount: 50.0,
+        mode: 'MOCK_AUTO',
+      })
+      if (res.status === 'SUCCESS') {
+        toast.success('Payment completed! Generating official certificate...')
+        store.syncFromResponse({
+          application_status: 'PAYMENT_COMPLETED',
+          progress_percent: 95,
+        })
+        store.addMessage({
+          role: 'ASSISTANT',
+          content: `✅ **Payment Successful!** (₹50)\n💳 Transaction ID: **${res.txn_id}**\n\n📜 Your certificate is now being generated!`,
+          language: store.language,
+        })
+        setSseNotification(null)
+      }
+    } catch (err) {
+      toast.error(err.message || 'Payment initiation failed')
+    } finally {
+      setPaying(false)
+    }
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -460,7 +491,9 @@ export default function CitizenChat() {
     sseRef.current = es
 
     const STATUS_MESSAGES = {
-      APPROVED:                 { type: 'success', msg: '🎉 Your application has been APPROVED! Payment step will begin shortly.' },
+      APPROVED:                 { type: 'success', msg: '🎉 Your application has been APPROVED! Statutory fee payment is now required.' },
+      PAYMENT_REQUIRED:         { type: 'info',    msg: '💳 Application Approved! Please complete fee payment to issue your certificate.' },
+      PAYMENT_COMPLETED:        { type: 'success', msg: '💰 Payment received! Generating your official certificate...' },
       REJECTED:                 { type: 'error',   msg: '❌ Your application has been REJECTED. Please check the chat for reasons.' },
       CLARIFICATION_REQUIRED:   { type: 'warning', msg: '📋 Clarification is required. Please check the chat and respond.' },
       CERTIFICATE_READY:        { type: 'success', msg: '📜 Your certificate is ready! Download it from the portal.' },
@@ -475,7 +508,7 @@ export default function CitizenChat() {
         if (cfg) {
           setSseNotification({ ...cfg, status: newStatus, ts: Date.now() })
           toast(cfg.msg, {
-            icon: cfg.type === 'success' ? '✅' : cfg.type === 'error' ? '❌' : '⚠️',
+            icon: cfg.type === 'success' ? '✅' : cfg.type === 'error' ? '❌' : 'ℹ️',
             duration: 8000,
           })
           // Sync status in the store too
@@ -810,6 +843,49 @@ export default function CitizenChat() {
           <div className={styles.sseNotificationBanner} data-type={sseNotification.type}>
             <span className={styles.sseNotificationMsg}>{sseNotification.msg}</span>
             <button className={styles.sseNotificationClose} onClick={() => setSseNotification(null)}>✕</button>
+          </div>
+        )}
+
+        {/* Phase 9/17: Payment Required Action Banner */}
+        {(store.applicationStatus === 'PAYMENT_REQUIRED' || sseNotification?.status === 'PAYMENT_REQUIRED') && (
+          <div style={{
+            background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)',
+            border: '1px solid #bfdbfe',
+            borderRadius: 12,
+            padding: '16px 20px',
+            margin: '0 20px 16px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            boxShadow: '0 4px 12px rgba(2, 132, 199, 0.08)',
+          }}>
+            <div>
+              <div style={{ fontWeight: 700, color: '#1e3a8a', fontSize: '0.95rem', marginBottom: 2 }}>
+                🎉 Application Approved — Statutory Fee Payment Required
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#3b82f6' }}>
+                Pay the official ₹50 processing fee to immediately generate and download your certificate.
+              </div>
+            </div>
+            <button
+              onClick={handlePayNow}
+              disabled={paying}
+              style={{
+                padding: '10px 20px',
+                background: '#00355f',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: 8,
+                fontWeight: 700,
+                fontSize: '0.875rem',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                boxShadow: '0 2px 6px rgba(0, 53, 95, 0.2)',
+              }}
+            >
+              {paying ? 'Processing...' : '💳 Pay Now (₹50)'}
+            </button>
           </div>
         )}
 

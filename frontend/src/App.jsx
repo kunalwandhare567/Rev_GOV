@@ -30,11 +30,13 @@ import IVRSimulator      from './pages/IVRSimulator/IVRSimulator'
 import ApplicationReview from './pages/ApplicationReview/ApplicationReview'
 
 // ── ADMIN PORTAL ──
-import AdminLogin     from './pages/AdminLogin/AdminLogin'
-import AdminDashboard from './pages/AdminDashboard/AdminDashboard'
-import DataGuardDemo  from './pages/DataGuardDemo/DataGuardDemo'
-import AuditLog       from './pages/AuditLog/AuditLog'
-import OfficerReview  from './pages/OfficerReview/OfficerReview'
+import AdminLogin        from './pages/AdminLogin/AdminLogin'
+import AdminDashboard    from './pages/AdminDashboard/AdminDashboard'
+import AdminApplications from './pages/AdminApplications/AdminApplications'
+import DataGuardDemo     from './pages/DataGuardDemo/DataGuardDemo'
+import AuditLog          from './pages/AuditLog/AuditLog'
+import OfficerReview     from './pages/OfficerReview/OfficerReview'
+import EscalationPanel   from './pages/EscalationPanel/EscalationPanel'
 
 export default function App() {
   return (
@@ -99,11 +101,15 @@ export default function App() {
             </AuthGuard>
           }
         >
-          <Route path="/admin"                 element={<Navigate to="/admin/dashboard" replace />} />
-          <Route path="/admin/dashboard"       element={<AdminDashboard />} />
+          <Route path="/admin"                   element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="/admin/dashboard"         element={<AdminDashboard />} />
+          <Route path="/admin/applications"      element={<AdminApplications />} />
           <Route path="/admin/review/:appNumber" element={<OfficerReview />} />
-          <Route path="/admin/data-guard"      element={<DataGuardDemo />} />
-          <Route path="/admin/audit"           element={<AuditLog />} />
+          <Route path="/admin/documents"         element={<DataGuardDemo />} />
+          <Route path="/admin/data-guard"        element={<DataGuardDemo />} />
+          <Route path="/admin/audit"             element={<AuditLog />} />
+          <Route path="/admin/escalations"       element={<EscalationPanel />} />
+          <Route path="/admin/live-events"       element={<AuditLog />} />
         </Route>
 
         {/* ══════════════════════════════════════════════════
