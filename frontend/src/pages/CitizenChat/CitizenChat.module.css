@@ -452,6 +452,46 @@
 .rejected   { background: rgba(214,69,69,0.12); color: var(--rg-error); }
 .emptyDocsText { font-size: 0.875rem; color: var(--rg-text-body); text-align: center; padding: 1.5rem 0; }
 
+.ocrFieldDetails {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--rg-outline-variant);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ocrSection {
+  background: var(--rg-surface-container-low, #f8fafc);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--rg-outline-variant);
+}
+.ocrSectionTitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--rg-text-body);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+.ocrFieldRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  gap: 0.5rem;
+}
+.ocrFieldName { color: var(--rg-text-body); }
+.ocrFieldVal { color: var(--rg-text-heading); font-weight: 600; text-align: right; }
+.rawOcrSnippet {
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: var(--rg-text-body);
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
 /* Mismatch resolver */
 .mismatchResolver { margin-top: 0.75rem; border-top: 1px solid var(--rg-outline-variant); padding-top: 0.75rem; }
 .mismatchAlert {

@@ -51,6 +51,7 @@ class WhatsAppMessageResponse(BaseModel):
     options: list = []
     tracking_id: Optional[str] = None
     application_id: Optional[str] = None
+    application_number: Optional[str] = None
     session_id: Optional[str] = None
     session_node: Optional[str] = None
     current_node: Optional[str] = None
@@ -113,9 +114,16 @@ async def receive_message(
         language=lang,
     )
 
+    app_id = result.get("application_id") or (application.id if application else None)
+    app_num = result.get("application_number") or (application.application_number if application else None)
+    tracking_id = result.get("tracking_id") or (application.tracking_id if application else None)
+
     # 6. Update last channel on application
-    if result.get("application_id"):
-        app_repo.update_last_channel(result["application_id"], Channel.WHATSAPP.value)
+    if app_id:
+        app_repo.update_last_channel(app_id, Channel.WHATSAPP.value)
+
+    from app.data_layer.repositories.session_repo import SessionRepository
+    session = SessionRepository(db).load_session(citizen.citizen_ref) or session
 
     reply_text = result.get("response", "")
     return WhatsAppMessageResponse(
@@ -123,8 +131,9 @@ async def receive_message(
         response=reply_text,
         reply_audio_url=result.get("reply_audio_url"),
         options=result.get("options", []),
-        tracking_id=result.get("tracking_id"),
-        application_id=result.get("application_id"),
+        tracking_id=tracking_id,
+        application_id=app_id,
+        application_number=app_num,
         session_id=session.id,
         session_node=session.current_node,
         current_node=session.current_node,

@@ -15,14 +15,17 @@ class LLMUnavailableError(Exception):
     Raised when the configured LLM provider is unreachable or returns an error.
 
     Correct behavior:
-        raise LLMUnavailableError("Gemini quota exceeded")
+        raise LLMUnavailableError("OpenRouter error")
         → API returns 503: "AI service temporarily unavailable. Please try again."
 
     NEVER do:
         except LLMUnavailableError:
             return keyword_fallback_response()  # ← FORBIDDEN
     """
-    pass
+    def __init__(self, message: str = "AI service temporarily unavailable. Please try again.", status_code: int = 503):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
 
 
 class LLMConfigError(Exception):

@@ -122,6 +122,22 @@ class LLMService:
         return self._provider.answer_rag(question, knowledge_chunks, language)
 
     # ─────────────────────────────────────────────
+    # OCR Normalization
+    # ─────────────────────────────────────────────
+
+    def normalize_ocr_fields(
+        self,
+        raw_text: str,
+        extracted_fields: Dict,
+        doc_type: str
+    ) -> Dict:
+        """
+        Normalize noisy OCR extraction into clean fields with confidence scores.
+        Raises LLMUnavailableError on provider failure.
+        """
+        return self._provider.normalize_ocr_fields(raw_text, extracted_fields, doc_type)
+
+    # ─────────────────────────────────────────────
     # Provider Info
     # ─────────────────────────────────────────────
 

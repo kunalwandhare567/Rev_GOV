@@ -36,6 +36,10 @@ class NextQuestionResult:
     ocr_filled: List[str] = field(default_factory=list)          # Slots auto-filled from OCR
     validation_errors: Dict[str, str] = field(default_factory=dict)  # Field → error message
 
+    @property
+    def missing_slots(self) -> List[str]:
+        return self.missing_required
+
 
 class NextQuestionEngine:
     """

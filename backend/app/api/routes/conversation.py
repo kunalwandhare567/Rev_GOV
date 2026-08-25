@@ -300,9 +300,12 @@ async def upload_document(
         doc_type=doc_type,
         file_ref=file_ref,
         extracted_fields=extracted_fields,
+        raw_ocr_text=ocr_res.raw_text,
+        raw_extracted_fields=ocr_res.raw_fields,
+        normalized_fields=ocr_res.normalized_fields,
+        normalization_confidence=ocr_res.confidence_breakdown,
+        normalization_status=ocr_res.normalization_metadata.get("status") if ocr_res.normalization_metadata else None,
     )
-
-
 
     # Return synced application documents and info
     app_num = None
@@ -318,20 +321,7 @@ async def upload_document(
             app_num = app.application_number
             service_id = app.service_id
             payment_status = app.payment_status
-            documents = [
-                {
-                    "id": d.id,
-                    "doc_type": d.doc_type,
-                    "filename": os.path.basename(d.file_ref) if d.file_ref else "",
-                    "file_ref": f"/data/uploads/{os.path.basename(d.file_ref)}" if d.file_ref and not d.file_ref.startswith("mock") else d.file_ref,
-                    "is_verified": d.verification_status == "VERIFIED",
-                    "verification_status": d.verification_status,
-                    "mismatch_fields": d.mismatch_fields,
-                    "extracted_fields": d.extracted_fields,
-                    "confidence_score": d.confidence_score,
-                }
-                for d in (app.documents or [])
-            ]
+            documents = [_format_document_dict(d) for d in (app.documents or [])]
 
     return {
         "status": "ok",
@@ -355,11 +345,17 @@ def resolve_mismatch(req: ResolveMismatchRequest, db: Session = Depends(get_db))
 
     from app.data_layer.repositories.session_repo import SessionRepository
     from app.data_layer.repositories.application_repo import ApplicationRepository
+    from app.services.citizen_resolver import CitizenResolver
 
     session_repo = SessionRepository(db)
-    session = session_repo.load_session(citizen.citizen_ref)
+    session = session_repo.get_or_recover_session(citizen.citizen_ref)
     if not session or not session.application_id:
-        raise HTTPException(status_code=400, detail="No active application session found.")
+        active_app = CitizenResolver(db).get_active_application(citizen.citizen_ref)
+        if active_app:
+            session = session_repo.get_or_recover_session(citizen.citizen_ref, application_id=active_app.id)
+
+    if not session or not session.application_id:
+        raise HTTPException(status_code=404, detail="No active or pending application found for this citizen.")
 
     app_repo = ApplicationRepository(db)
     app = app_repo.get_by_id(session.application_id)
@@ -592,16 +588,62 @@ def switch_channel(req: ChannelSwitchRequest, db: Session = Depends(get_db)):
     }
 
 
+def _format_document_dict(d) -> dict:
+    """Format single authoritative Document dictionary for API responses."""
+    return {
+        "id": d.id,
+        "doc_id": d.id,
+        "document_id": d.id,
+        "doc_type": d.doc_type,
+        "document_type": d.doc_type,
+        "filename": os.path.basename(d.file_ref) if d.file_ref else "",
+        "file_ref": f"/data/uploads/{os.path.basename(d.file_ref)}" if d.file_ref and not d.file_ref.startswith("mock") else d.file_ref,
+        "is_verified": d.verification_status in ("VERIFIED", "MATCHED"),
+        "verification_status": d.verification_status,
+        "confidence_score": d.confidence_score or 1.0,
+        "overall_match_score": d.overall_match_score,
+        "mismatch_fields": d.mismatch_fields or [],
+        "matched_fields": getattr(d, "matched_fields", []) or [],
+        "extracted_fields": d.extracted_fields or {},
+        "field_match_scores": d.field_match_scores or {},
+        "raw_ocr": {
+            "text": getattr(d, "raw_ocr_text", "") or "",
+            "fields": getattr(d, "raw_extracted_fields", {}) or {},
+        },
+        "raw_ocr_text": getattr(d, "raw_ocr_text", "") or "",
+        "raw_extracted_fields": getattr(d, "raw_extracted_fields", {}) or {},
+        "normalized_ocr": {
+            "fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
+            "confidence": getattr(d, "normalization_confidence", {}) or {},
+        },
+        "normalized_fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
+        "normalization_confidence": getattr(d, "normalization_confidence", {}) or {},
+        "normalization_status": getattr(d, "normalization_status", "DETERMINISTIC"),
+        "matching": {
+            "score": d.overall_match_score or 0.0,
+            "status": d.verification_status,
+            "matched_fields": getattr(d, "matched_fields", []) or [],
+            "mismatched_fields": d.mismatch_fields or [],
+        },
+        "upload_channel": d.upload_channel or "WEB",
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
 @router.get("/session/{citizen_identifier}")
-def get_session(citizen_identifier: str, request: Request, db: Session = Depends(get_db)):
-    """Get current session state for a citizen."""
-    citizen = _resolve_citizen_from_req(request, raw_identifier=citizen_identifier, db=db)
-
+def get_session(citizen_identifier: str, db: Session = Depends(get_db)):
+    """Retrieve active session state for a citizen, auto-recovering if necessary."""
+    from app.services.citizen_resolver import CitizenResolver
     from app.data_layer.repositories.session_repo import SessionRepository
-    session = SessionRepository(db).load_session(citizen.citizen_ref)
 
+    citizen_ref = CitizenResolver.resolve_citizen_ref(citizen_identifier, db=db)
+    session_repo = SessionRepository(db)
+    session = session_repo.get_or_recover_session(citizen_ref)
     if not session:
-        return {"status": "no_session", "citizen_ref": citizen.citizen_ref}
+        return {"status": "inactive", "message": "No active application session found."}
+
+    citizen_repo = CitizenRepository(db)
+    citizen = citizen_repo.get(session.citizen_ref) or citizen_repo.resolve_or_create(session.citizen_ref)
 
     app_num = None
     service_id = None
@@ -618,20 +660,7 @@ def get_session(citizen_identifier: str, request: Request, db: Session = Depends
             service_id = app.service_id
             anomaly_score = app.anomaly_score
             payment_status = app.payment_status
-            documents = [
-                {
-                    "id": d.id,
-                    "doc_type": d.doc_type,
-                    "filename": os.path.basename(d.file_ref) if d.file_ref else "",
-                    "file_ref": f"/data/uploads/{os.path.basename(d.file_ref)}" if d.file_ref and not d.file_ref.startswith("mock") else d.file_ref,
-                    "is_verified": d.verification_status == "VERIFIED",
-                    "verification_status": d.verification_status,
-                    "mismatch_fields": d.mismatch_fields,
-                    "extracted_fields": d.extracted_fields,
-                    "confidence_score": d.confidence_score,
-                }
-                for d in (app.documents or [])
-            ]
+            documents = [_format_document_dict(d) for d in (app.documents or [])]
 
     return {
         "status": "active",

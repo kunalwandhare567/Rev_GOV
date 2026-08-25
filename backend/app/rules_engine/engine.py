@@ -67,9 +67,15 @@ class ServiceSpecLoader:
             return cls._cache
 
         specs_dir = settings.SERVICE_SPECS_DIR
+        if not os.path.isabs(specs_dir):
+            specs_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", specs_dir.replace("\\", "/").lstrip("./")))
         if not os.path.exists(specs_dir):
-            logger.warning(f"Service specs directory not found: {specs_dir}")
-            return {}
+            alt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "seed", "service_specs"))
+            if os.path.exists(alt_dir):
+                specs_dir = alt_dir
+            else:
+                logger.warning(f"Service specs directory not found: {specs_dir}")
+                return {}
 
         for filename in os.listdir(specs_dir):
             if filename.endswith(".yaml") or filename.endswith(".yml"):

@@ -38,6 +38,127 @@ class SessionRepository:
         )
         return session
 
+    def get_or_recover_session(
+        self,
+        citizen_ref: str,
+        application_id: Optional[str] = None,
+        tracking_id: Optional[str] = None,
+        channel: str = "WEB",
+        language: str = "en",
+    ) -> Optional[ConversationSession]:
+        """
+        Recover conversation session using SQLite Application as recovery anchor:
+        1. Active session exists -> Reuse it.
+        2. Inactive / expired session exists -> Reactivate it with new TTL.
+        3. Application exists in SQLite, but no session exists -> Create new session linked to Application.
+           (DO NOT create duplicate Application).
+        4. Neither exists -> Return None.
+        """
+        from app.models.db_models import Application
+        from app.data_layer.repositories.application_repo import ApplicationRepository
+
+        now = datetime.datetime.utcnow()
+        ttl = datetime.timedelta(minutes=settings.SESSION_TTL_MINUTES)
+
+        # 1. Check for existing active session
+        session = self.load_session(citizen_ref)
+        if session:
+            if application_id and session.application_id != application_id:
+                session.application_id = application_id
+                self.save_session(session)
+            return session
+
+        # 2. Check for latest inactive/expired session for this citizen
+        latest_session = (
+            self.db.query(ConversationSession)
+            .filter(ConversationSession.citizen_ref == citizen_ref)
+            .order_by(ConversationSession.updated_at.desc())
+            .first()
+        )
+
+        # Look up citizen's active or targeted Application in SQLite
+        app_query = self.db.query(Application).filter(Application.citizen_ref == citizen_ref)
+        if application_id:
+            target_app = app_query.filter(Application.id == application_id).first()
+        elif tracking_id:
+            target_app = app_query.filter(
+                (Application.tracking_id == tracking_id) | (Application.application_number == tracking_id)
+            ).first()
+        else:
+            terminal = ("COMPLETED", "REJECTED")
+            target_app = (
+                app_query.filter(~Application.status.in_(terminal))
+                .order_by(Application.created_at.desc())
+                .first()
+            )
+            if not target_app:
+                target_app = app_query.order_by(Application.created_at.desc()).first()
+
+        app_repo = ApplicationRepository(self.db)
+
+        if latest_session:
+            # CASE 2: Reactivate existing session
+            latest_session.expires_at = now + ttl
+            latest_session.updated_at = now
+            if target_app:
+                latest_session.application_id = target_app.id
+                app_fields = app_repo.get_fields(target_app.id)
+                if app_fields:
+                    latest_session.filled_slots = {**app_fields, **(latest_session.filled_slots or {})}
+                if target_app.status in ("APPROVED", "PAYMENT_REQUIRED"):
+                    latest_session.current_node = "PAYMENT"
+                elif target_app.status in ("OCR_VALIDATION", "DOCUMENT_COLLECTION", "DOCUMENTS_REQUESTED"):
+                    latest_session.current_node = "DOCUMENT_UPLOAD"
+                elif target_app.status in ("SUBMITTED_FOR_VERIFICATION", "UNDER_REVIEW", "COMPLETED"):
+                    latest_session.current_node = "SUBMITTED"
+            self.db.commit()
+            self.db.refresh(latest_session)
+            return latest_session
+
+        if target_app:
+            # CASE 3: Application exists, create linked session without duplicate application
+            app_fields = app_repo.get_fields(target_app.id)
+            status_node = "SLOT_FILLING"
+            if target_app.status in ("APPROVED", "PAYMENT_REQUIRED"):
+                status_node = "PAYMENT"
+            elif target_app.status in ("OCR_VALIDATION", "DOCUMENT_COLLECTION"):
+                status_node = "DOCUMENT_UPLOAD"
+            elif target_app.status in ("SUBMITTED_FOR_VERIFICATION", "UNDER_REVIEW", "COMPLETED"):
+                status_node = "SUBMITTED"
+
+            new_session = ConversationSession(
+                citizen_ref=citizen_ref,
+                application_id=target_app.id,
+                current_node=status_node,
+                channel=target_app.last_channel or target_app.channel_origin or channel,
+                language=target_app.language or language,
+                filled_slots=app_fields or {},
+                missing_slots=[],
+                validation_errors=[],
+                correction_history=[],
+                document_refs=[d.file_ref for d in (target_app.documents or []) if d.file_ref],
+                payment_status=target_app.payment_status or "PENDING",
+                consent_given=True,
+                anomaly_score=target_app.anomaly_score or 0.0,
+                channel_history=[target_app.channel_origin or channel],
+                expires_at=now + ttl,
+            )
+            self.db.add(new_session)
+            self.db.commit()
+            self.db.refresh(new_session)
+            return new_session
+
+        return None
+
+    def get_session_by_application_id(self, application_id: str) -> Optional[ConversationSession]:
+        """Find the conversation session attached to an application_id."""
+        return (
+            self.db.query(ConversationSession)
+            .filter(ConversationSession.application_id == application_id)
+            .order_by(ConversationSession.updated_at.desc())
+            .first()
+        )
+
     def create_session(
         self,
         citizen_ref: str,

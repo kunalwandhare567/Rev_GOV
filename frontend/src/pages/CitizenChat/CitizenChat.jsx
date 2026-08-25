@@ -970,6 +970,15 @@ export default function CitizenChat() {
                 <div className={styles.docsList}>
                   {store.documents.map((doc) => {
                     const isMismatch = doc.verification_status === 'MISMATCH'
+                    const matchScore = doc.matching?.score !== undefined && doc.matching?.score !== null
+                      ? Number(doc.matching.score)
+                      : (doc.overall_match_score !== null && doc.overall_match_score !== undefined ? Number(doc.overall_match_score) : 100.0)
+                    const normConf = doc.normalized_ocr?.confidence?.applicant_name !== undefined
+                      ? Number(doc.normalized_ocr.confidence.applicant_name) * 100
+                      : Number(doc.confidence_score || 1.0) * 100
+                    const normFields = doc.normalized_ocr?.fields || doc.normalized_fields || doc.extracted_fields || {}
+                    const rawText = doc.raw_ocr?.text || doc.raw_ocr_text
+
                     return (
                       <div key={doc.id} className={`${styles.docCard} ${isMismatch ? styles.mismatchDoc : ''}`}>
                         <div className={styles.docHeader}>
@@ -981,18 +990,46 @@ export default function CitizenChat() {
                         </div>
 
                         <div className={styles.docMetaGrid}>
-                          <span className={styles.docMetaKey}>Confidence:</span>
-                          <span className={styles.docMetaValue}>{(doc.confidence_score * 100).toFixed(1)}%</span>
-                          <span className={styles.docMetaKey}>Status:</span>
-                          <span className={`${styles.docStatusBadge} ${styles[doc.verification_status.toLowerCase()]}`}>
-                            {doc.verification_status}
+                          <span className={styles.docMetaKey}>Document Match Score:</span>
+                          <span className={styles.docMetaValue} style={{ fontWeight: 700, color: 'var(--rg-primary, #00539f)' }}>
+                            {matchScore.toFixed(1)}%
                           </span>
+                          <span className={styles.docMetaKey}>OCR Normalization Confidence:</span>
+                          <span className={styles.docMetaValue}>
+                            {normConf.toFixed(1)}%
+                          </span>
+                          <span className={styles.docMetaKey}>Status:</span>
+                          <span className={`${styles.docStatusBadge} ${styles[String(doc.verification_status || 'pending').toLowerCase()] || styles.verified}`}>
+                            {doc.verification_status || 'VERIFIED'}
+                          </span>
+                        </div>
+
+                        {/* Normalized vs Raw OCR Transparency Box */}
+                        <div className={styles.ocrFieldDetails}>
+                          {Object.keys(normFields).length > 0 && (
+                            <div className={styles.ocrSection}>
+                              <div className={styles.ocrSectionTitle}>Normalized OCR</div>
+                              {Object.entries(normFields).map(([k, v]) => (
+                                <div key={k} className={styles.ocrFieldRow}>
+                                  <span className={styles.ocrFieldName}>{k.replace(/_/g, ' ')}:</span>
+                                  <span className={styles.ocrFieldVal} style={{ color: 'var(--rg-success, #198754)' }}>{String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {rawText && (
+                            <div className={styles.ocrSection}>
+                              <div className={styles.ocrSectionTitle}>Raw OCR</div>
+                              <div className={styles.rawOcrSnippet}>{rawText}</div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Mismatch Decision Modal Panel */}
                         {isMismatch && doc.mismatch_fields && doc.mismatch_fields.map(field => {
                           const declared = store.filledSlots[field]
-                          const ocrVal = doc.extracted_fields[field] || '—'
+                          const ocrVal = normFields[field] || doc.extracted_fields?.[field] || '—'
                           return (
                             <div key={field} className={styles.mismatchResolver}>
                               <div className={styles.mismatchAlert}>

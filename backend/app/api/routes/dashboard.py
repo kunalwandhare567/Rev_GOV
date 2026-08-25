@@ -157,14 +157,15 @@ def get_service_health(db: Session = Depends(get_db)):
     except Exception:
         db_status = "UNHEALTHY"
 
-    # Check NLU (Ollama availability)
+    # Check LLM / NLU provider
     try:
-        import httpx
-        from app.core.config import settings
-        resp = httpx.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2.0)
-        nlu_status = "HEALTHY" if resp.status_code == 200 else "DEGRADED (fallback active)"
-    except Exception:
-        nlu_status = "DEGRADED (keyword fallback active)"
+        from app.llm.provider_factory import get_provider
+        provider = get_provider()
+        nlu_status = "HEALTHY"
+        provider_name = provider.provider_name
+    except Exception as e:
+        nlu_status = f"UNAVAILABLE ({e})"
+        provider_name = settings.LLM_PROVIDER
 
     # Check service spec loader
     specs = ServiceSpecLoader.load_all()
@@ -174,7 +175,7 @@ def get_service_health(db: Session = Depends(get_db)):
         "timestamp": datetime.datetime.utcnow().isoformat(),
         "components": {
             "database": {"status": db_status, "type": "SQLite"},
-            "nlu_engine": {"status": nlu_status, "provider": "local/ollama"},
+            "nlu_engine": {"status": nlu_status, "provider": provider_name},
             "service_specs": {"status": spec_status},
             "data_guard": {"status": "HEALTHY", "mode": "STRICT"},
             "conversation_engine": {"status": "HEALTHY"},

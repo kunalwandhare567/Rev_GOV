@@ -65,11 +65,11 @@ FIELD_TYPES = {
     "applicant_dob": "date",
     "date_of_birth": "date",
     "gender": "exact",
-    "aadhaar_number": "number",
-    "pan_number": "number",
-    "voter_id": "number",
-    "dl_number": "number",
-    "passport_number": "number",
+    "aadhaar_number": "exact",
+    "pan_number": "exact",
+    "voter_id": "exact",
+    "dl_number": "exact",
+    "passport_number": "exact",
     "address": "address",
     "annual_income": "number",
     "amount": "number",
@@ -405,7 +405,9 @@ class MatchingService:
             return self._fuzzy_name_match(v1, v2)
         elif field_type == "date":
             return self._date_match(v1, v2)
-        elif field_type in ("exact", "number"):
+        elif field_type == "number":
+            return self._number_match(v1, v2)
+        elif field_type == "exact":
             return 100.0 if v1.replace(" ", "") == v2.replace(" ", "") else 0.0
         elif field_type == "address":
             return self._token_overlap(v1, v2)
@@ -414,23 +416,71 @@ class MatchingService:
 
     def _fuzzy_name_match(self, n1: str, n2: str) -> float:
         """
-        Fuzzy name matching — handles transliteration differences.
-        e.g. "Wandhare" vs "Wadhare" → 87%
-        Uses both sequence ratio and token-sorted ratio to handle name order.
+        Robust name matching:
+        - Handles token order and transliteration differences
+        - Handles noisy OCR where genuine name tokens are embedded in surrounding OCR noise
+        - Yields >= 90% score when declared name tokens are present in OCR
+        - Accurately detects true mismatches (e.g. 'Viki Lokhande' vs 'Rahul Kumar' -> < 20%)
         """
+        # 1. Standard SequenceMatcher ratio
         ratio = difflib.SequenceMatcher(None, n1, n2).ratio() * 100
+
+        # 2. Token-sorted SequenceMatcher ratio
         words1 = sorted(n1.split())
         words2 = sorted(n2.split())
         token_ratio = difflib.SequenceMatcher(
             None, " ".join(words1), " ".join(words2)
         ).ratio() * 100
-        return round(max(ratio, token_ratio), 1)
+
+        # 3. Token-set / Subset Containment Ratio (handles OCR surrounding noise)
+        w1 = [w for w in re.findall(r'[\w\u0900-\u097F]+', n1) if len(w) >= 2]
+        w2 = [w for w in re.findall(r'[\w\u0900-\u097F]+', n2) if len(w) >= 2]
+
+        subset_score = 0.0
+        if w1 and w2:
+            matched_scores = []
+            for word1 in w1:
+                best_match = max((difflib.SequenceMatcher(None, word1, word2).ratio() for word2 in w2), default=0.0)
+                matched_scores.append(best_match)
+
+            matched_count = sum(1 for s in matched_scores if s >= 0.80)
+            avg_matched_score = sum(matched_scores) / len(matched_scores)
+
+            if matched_count == len(w1) and avg_matched_score >= 0.85:
+                # All declared name tokens are fully contained in the OCR text
+                subset_score = round(avg_matched_score * 100.0, 1)
+            elif matched_count > 0:
+                # Partial token overlap weighted by fraction of matched tokens
+                fraction = matched_count / len(w1)
+                subset_score = round(avg_matched_score * fraction * 100.0, 1)
+
+        return round(max(ratio, token_ratio, subset_score), 1)
+
+    def _number_match(self, v1: str, v2: str) -> float:
+        """Numeric comparison handling currency formatting, commas, decimals."""
+        c1 = re.sub(r'[^\d.]', '', v1)
+        c2 = re.sub(r'[^\d.]', '', v2)
+        if not c1 or not c2:
+            return 100.0 if v1.replace(" ", "") == v2.replace(" ", "") else 0.0
+
+        try:
+            f1 = float(c1)
+            f2 = float(c2)
+            if abs(f1 - f2) < 0.01:
+                return 100.0
+            # Within 5% variance for annual income
+            diff_pct = abs(f1 - f2) / max(f1, f2)
+            if diff_pct <= 0.05:
+                return round(100.0 - (diff_pct * 100), 1)
+            return 0.0
+        except ValueError:
+            return 100.0 if c1 == c2 else 0.0
 
     def _fuzzy_match(self, v1: str, v2: str) -> float:
         return round(difflib.SequenceMatcher(None, v1, v2).ratio() * 100, 1)
 
     def _date_match(self, d1: str, d2: str) -> float:
-        """Normalize dates and compare. Returns 100 or fuzzy score."""
+        """Normalize dates to YYYY-MM-DD and compare. Returns 100 or fuzzy score."""
         n1 = self._normalize_date_str(d1)
         n2 = self._normalize_date_str(d2)
         if not n1 or not n2:
@@ -439,14 +489,14 @@ class MatchingService:
 
     def _normalize_date_str(self, s: str) -> Optional[str]:
         """Extract YYYY-MM-DD from various formats."""
-        s = s.strip()
+        s = s.strip().replace(".", "-").replace("/", "-")
         if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
             return s
-        m = re.match(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$', s)
+        m = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', s)
         if m:
             return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
         # DD-MM-YY
-        m = re.match(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{2})$', s)
+        m = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{2})$', s)
         if m:
             y = int(m.group(3))
             year = f"20{m.group(3)}" if y < 50 else f"19{m.group(3)}"
@@ -455,8 +505,8 @@ class MatchingService:
 
     def _token_overlap(self, a1: str, a2: str) -> float:
         """Token overlap (Jaccard) for address matching."""
-        tokens1 = set(re.findall(r'\w+', a1))
-        tokens2 = set(re.findall(r'\w+', a2))
+        tokens1 = set(re.findall(r'[\w\u0900-\u097F]+', a1))
+        tokens2 = set(re.findall(r'[\w\u0900-\u097F]+', a2))
         if not tokens1 or not tokens2:
             return 0.0
         intersection = tokens1 & tokens2

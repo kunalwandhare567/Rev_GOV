@@ -139,7 +139,7 @@ def test_10_whatsapp_fill_income(client):
 def test_16_check_application_status(client):
     if not state.get("application_number"):
         pytest.skip("No application number from flow")
-    r = client.get(f"/api/v1/applications/status/{state['application_number']}")
+    r = client.get(f"/api/v1/tracking/{state['application_number']}")
     assert r.status_code in (200, 404)  # 404 is ok if app not yet created
 
 
@@ -203,6 +203,7 @@ def test_26_simulate_payment(client):
         if recent:
             app_num = recent[0].get("application_number")
             state["latest_app_number"] = app_num
+            state["application_id"] = recent[0].get("id")
 
 
 def test_27_payment_status(client):

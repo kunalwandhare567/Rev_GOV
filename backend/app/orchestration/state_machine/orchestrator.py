@@ -27,11 +27,11 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 STATE_GRAPH = {
-    "INIT": ["CONSENT", "RESUME_SESSION"],
-    "CONSENT": ["INTENT_DETECTION"],
+    "INIT": ["CONSENT", "INTENT_DETECTION", "SLOT_FILLING", "STATUS_QUERY", "RESUME_SESSION"],
+    "CONSENT": ["INTENT_DETECTION", "SLOT_FILLING", "END"],
     "INTENT_DETECTION": ["SLOT_FILLING", "STATUS_QUERY", "ESCALATION"],
     "SLOT_FILLING": ["SLOT_FILLING", "DOCUMENT_CAPTURE", "VALIDATION"],
-    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING", "VALIDATION", "PAYMENT", "CORRECTION_PROMPT"],
+    "DOCUMENT_CAPTURE": ["DOCUMENT_VERIFY", "SLOT_FILLING", "VALIDATION", "PAYMENT", "CORRECTION_PROMPT", "PENDING_OFFICER_PRE_APPROVAL"],
     "DOCUMENT_VERIFY": ["VALIDATION", "CORRECTION_PROMPT"],
     "VALIDATION": ["PAYMENT", "CORRECTION_PROMPT", "ESCALATION"],
     "CORRECTION_PROMPT": ["SLOT_FILLING", "DOCUMENT_CAPTURE"],
@@ -58,15 +58,14 @@ class ConversationOrchestrator:
 
     def __init__(self, db: Session):
         self.db = db
-        # Phase 3: LLM-powered NLU (replaces Ollama LocalNLU)
-        self.nlu = NLUService()
-        self.intent_clf = IntentClassifier()   # Phase 5: richer intent + slot classifier
-        self.qa_handler = QAHandler()          # Phase 5: FAQ answers
-        self.field_corrector = FieldCorrector()# Phase 5: field value auto-correction
         self.session_repo = SessionRepository(db)
         self.app_repo = ApplicationRepository(db)
         self.citizen_repo = CitizenRepository(db)
         self.audit_repo = AuditRepository(db)
+        self.nlu = NLUService()
+        self.intent_clf = IntentClassifier()
+        self.qa_handler = QAHandler()
+        self.field_corrector = FieldCorrector()
         from app.services.next_question_engine import NextQuestionEngine
         self.next_q_engine = NextQuestionEngine()
         from app.services.rag_service import RAGService
@@ -76,7 +75,7 @@ class ConversationOrchestrator:
 
     def _build_conversation_context(self, session: ConversationSession) -> Dict[str, Any]:
         """
-        Build unified conversation and application context.
+        Build rich unified context payload for LLM understanding and dialogue.
         Includes citizen identity, active application meta, filled fields,
         pending slot, OCR data, and recent conversation turns.
         """
@@ -245,6 +244,8 @@ class ConversationOrchestrator:
             **extra_data,
         }
 
+    handle_message = process_message
+
     def _route(
         self, session: ConversationSession, nlu_result: Dict, raw_text: str
     ) -> Tuple[str, Optional[str], Dict]:
@@ -252,7 +253,7 @@ class ConversationOrchestrator:
         current = session.current_node
 
         if current == "INIT":
-            return self._handle_init(session, nlu_result)
+            return self._handle_init(session, nlu_result, raw_text)
         elif current == "CONSENT":
             return self._handle_consent(session, raw_text, nlu_result)
         elif current == "INTENT_DETECTION":
@@ -278,11 +279,11 @@ class ConversationOrchestrator:
         elif current == "ESCALATION":
             return self._handle_escalation(session, nlu_result)
         else:
-            return self._handle_init(session, nlu_result)
+            return self._handle_init(session, nlu_result, raw_text)
 
     # ── State Handlers ──
 
-    def _handle_init(self, session, nlu_result):
+    def _handle_init(self, session, nlu_result, raw_text: str = ""):
         """INIT: Check for existing session or start consent flow."""
         # Check for intent in greeting
         if nlu_result.get("intent") == "STATUS_QUERY":
@@ -294,6 +295,51 @@ class ConversationOrchestrator:
                 "STATUS_QUERY",
                 {},
             )
+
+        text_lower = (raw_text or "").lower().strip()
+        positive = ["yes", "haan", "ha", "agree", "ok", "okay", "हाँ", "हां", "1"]
+        has_positive = any(word in text_lower for word in positive)
+
+        # Check if user already gave consent in greeting
+        if has_positive:
+            session.consent_given = True
+            self.audit_repo.write(
+                event_type="CONSENT",
+                actor="CITIZEN",
+                citizen_ref=session.citizen_ref,
+                action="Explicit consent given by citizen in initial turn",
+                outcome="SUCCESS",
+                metadata={"channel": session.channel, "language": session.language},
+            )
+            # Check if service was also selected in the same message
+            service_type = self._normalize_service_id(nlu_result.get("service_type"), raw_text)
+            if service_type:
+                return self._handle_intent(session, {**nlu_result, "service_type": service_type})
+
+            msg = self._multilang_msg(session.language, {
+                "en": "Thank you! What certificate do you need? (Income / Caste / OBC-NCL / Domicile)",
+                "hi": "धन्यवाद! आपको कौन सा प्रमाण पत्र चाहिए? (आय / जाति / OBC-NCL / अधिवास)",
+            })
+            return msg, "INTENT_DETECTION", {}
+
+        # Check if user asked for a certificate directly without consent
+        service_type = self._normalize_service_id(nlu_result.get("service_type"), raw_text)
+        if service_type:
+            spec = ServiceSpecLoader.get(service_type)
+            service_name = spec.name.get(session.language, spec.name.get("en", service_type)) if spec and isinstance(spec.name, dict) else (service_type.replace("_", " ").title())
+            consent_msg = self._multilang_msg(session.language, {
+                "en": (
+                    f"🙏 Welcome to Revenue Services Portal.\n"
+                    f"To apply for your {service_name}, we need your consent to collect your information for application processing.\n\n"
+                    f"📌 Do you agree to data collection? (Yes/No)"
+                ),
+                "hi": (
+                    f"🙏 राजस्व सेवा पोर्टल में आपका स्वागत है।\n"
+                    f"{service_name} के लिए आवेदन करने हेतु हमें आपकी जानकारी एकत्र करने की अनुमति चाहिए।\n\n"
+                    f"📌 क्या आप सहमत हैं? (हाँ/नहीं)"
+                ),
+            })
+            return consent_msg, "CONSENT", {"requested_service": service_type}
 
         consent_msg = self._multilang_msg(session.language, {
             "en": (
@@ -328,6 +374,12 @@ class ConversationOrchestrator:
                 outcome="SUCCESS",
                 metadata={"channel": session.channel, "language": session.language},
             )
+
+            # Check if user mentioned service alongside consent
+            service_type = self._normalize_service_id(nlu_result.get("service_type"), raw_text)
+            if service_type:
+                return self._handle_intent(session, {**nlu_result, "service_type": service_type})
+
             msg = self._multilang_msg(session.language, {
                 "en": "Thank you! What certificate do you need? (Income / Caste / OBC-NCL / Domicile)",
                 "hi": "धन्यवाद! आपको कौन सा प्रमाण पत्र चाहिए? (आय / जाति / OBC-NCL / अधिवास)",
@@ -1147,12 +1199,21 @@ class ConversationOrchestrator:
         return spec.sla_days if spec else 7
 
     def process_document_upload(
-        self, citizen_ref: str, doc_type: str, file_ref: str, extracted_fields: Dict
+        self,
+        citizen_ref: str,
+        doc_type: str,
+        file_ref: str,
+        extracted_fields: Dict,
+        raw_ocr_text: Optional[str] = None,
+        raw_extracted_fields: Optional[Dict] = None,
+        normalized_fields: Optional[Dict] = None,
+        normalization_confidence: Optional[Dict] = None,
+        normalization_status: Optional[str] = None,
     ) -> Dict:
         """
-        Handle document upload, run OCR cross-reference matching,
-        generate a structured mismatch report, store it as a chat message
-        so the citizen sees it immediately, and return a full ValidationReport.
+        Handle document upload, run OCR cross-reference matching against normalized fields,
+        persist normalized OCR and match state to SQLite, recalculate readiness score,
+        and trigger NextQuestionEngine to advance to the next missing slot seamlessly.
         """
         session = self.session_repo.load_session(citizen_ref)
         if not session or not session.application_id:
@@ -1199,7 +1260,6 @@ class ConversationOrchestrator:
                 f"Your application has been submitted. Tracking ID: **{app_num}**."
             )
 
-            # Store as chat message so citizen sees it immediately
             self.session_repo.add_message(
                 session_id=session.id, role="ASSISTANT", content=response_msg,
                 language=session.language, modality="TEXT",
@@ -1217,49 +1277,51 @@ class ConversationOrchestrator:
                 "payment_status": "PAID",
             }
 
-        # ── Step A: Structured Log & Auto-prefill slots from OCR ─────────────
+        # ── Step A: Resolve Normalized Fields & Structured Prefill ──────────
+        active_normalized_fields = normalized_fields or extracted_fields or {}
+        active_raw_fields = raw_extracted_fields or extracted_fields or {}
+
         logger.info(
             f"[OCR_DOCUMENT_PROCESSING] Citizen={citizen_ref}, ApplicationId={session.application_id}, "
-            f"DocType={doc_type}, ExtractedFields={list(extracted_fields.keys())}"
+            f"DocType={doc_type}, NormalizedFields={list(active_normalized_fields.keys())}"
         )
 
+        db_app = self.app_repo.get_by_id(session.application_id)
+        spec = ServiceSpecLoader.get(db_app.service_id) if db_app else None
+        slot_map = {s.name: s for s in spec.slots} if spec and spec.slots else {}
+
         prefilled_count = 0
-        if extracted_fields and session.application_id:
-            db_app = self.app_repo.get_by_id(session.application_id)
-            if db_app:
-                spec = ServiceSpecLoader.get(db_app.service_id)
-                slot_map = {s.name: s for s in spec.slots} if spec and spec.slots else {}
-                ocr_fields = getattr(session, "ocr_fields", {}) or {}
+        if active_normalized_fields and session.application_id:
+            ocr_fields = getattr(session, "ocr_fields", {}) or {}
 
-                for field_name, val in extracted_fields.items():
-                    if val is not None and str(val).strip():
-                        val_str = str(val).strip()
-                        ocr_fields[field_name] = val_str
-                        if field_name in slot_map and field_name not in (session.filled_slots or {}):
-                            sl = slot_map[field_name]
-                            valid, _ = FieldValidator.validate_slot(sl, val_str, session.language)
-                            if valid:
-                                session.filled_slots = {**session.filled_slots, field_name: val_str}
-                                if field_name in (session.missing_slots or []):
-                                    session.missing_slots = [s for s in session.missing_slots if s != field_name]
-                                self.app_repo.save_field(
-                                    session.application_id, field_name, val_str, sl.classification, source="OCR"
-                                )
-                                prefilled_count += 1
+            for field_name, val in active_normalized_fields.items():
+                if val is not None and str(val).strip():
+                    val_str = str(val).strip()
+                    ocr_fields[field_name] = val_str
+                    if field_name in slot_map and field_name not in (session.filled_slots or {}):
+                        sl = slot_map[field_name]
+                        valid, _ = FieldValidator.validate_slot(sl, val_str, session.language)
+                        if valid:
+                            session.filled_slots = {**session.filled_slots, field_name: val_str}
+                            if field_name in (session.missing_slots or []):
+                                session.missing_slots = [s for s in session.missing_slots if s != field_name]
+                            self.app_repo.save_field(
+                                session.application_id, field_name, val_str, sl.classification, source="OCR"
+                            )
+                            prefilled_count += 1
 
-                session.ocr_fields = ocr_fields
+            session.ocr_fields = ocr_fields
 
         logger.info(
             f"[OCR_SLOT_PREFILL] Auto-prefilled {prefilled_count} missing application slots from OCR document proof."
         )
 
-        # ── Cross-reference: compare declared chat slots vs OCR fields ─────
+        # ── Cross-reference: compare declared chat slots vs normalized OCR fields ──
         from app.services.matching_service import MatchingService
         matcher = MatchingService()
 
-        # Pass doc_type so priority fields for that document type are considered
         match_res = matcher.compare_document(
-            session.filled_slots, extracted_fields, doc_type=doc_type
+            session.filled_slots, active_normalized_fields, doc_type=doc_type
         )
 
         mismatch_fields = match_res.mismatched_fields
@@ -1274,61 +1336,140 @@ class ConversationOrchestrator:
         else:
             status = "VERIFIED"
 
-        # Save document record
-        doc = self.app_repo.save_document(
-            session.application_id, doc_type, file_ref, extracted_fields, confidence_score
-        )
-        self.app_repo.update_document_verification(doc.id, status, mismatch_fields)
-        session.document_refs = session.document_refs + [doc.id]
+        # Calculate average normalization confidence if available
+        norm_conf_avg = 1.0
+        if normalization_confidence and isinstance(normalization_confidence, dict):
+            num_vals = [float(v) for v in normalization_confidence.values() if isinstance(v, (int, float))]
+            if num_vals:
+                norm_conf_avg = round(sum(num_vals) / len(num_vals), 3)
 
-        # ── Generate response message ──────────────────────────────────────
+        # Save document record in SQLite (prevents duplicates & stores all OCR metadata)
+        doc = self.app_repo.save_document(
+            application_id=session.application_id,
+            doc_type=doc_type,
+            file_ref=file_ref,
+            extracted_fields=active_normalized_fields,
+            confidence_score=norm_conf_avg,
+            raw_ocr_text=raw_ocr_text,
+            raw_extracted_fields=active_raw_fields,
+            normalized_fields=active_normalized_fields,
+            normalization_status=normalization_status or ("AI_NORMALIZED" if normalization_confidence else "DETERMINISTIC"),
+            normalization_confidence=normalization_confidence or {},
+            overall_match_score=match_res.overall_score,
+            matched_fields=match_res.matched_fields,
+            field_match_scores=match_res.field_scores,
+            verification_status=status,
+        )
+        self.app_repo.update_document_verification(
+            doc_id=doc.id,
+            status=status,
+            mismatch_fields=mismatch_fields,
+            matched_fields=match_res.matched_fields,
+            overall_match_score=match_res.overall_score,
+            field_match_scores=match_res.field_scores,
+        )
+        if doc.id not in (session.document_refs or []):
+            session.document_refs = (session.document_refs or []) + [doc.id]
+
+        # Recalculate readiness score in SQLite
+        if db_app and spec:
+            from app.services.readiness_engine import ReadinessEngine
+            readiness_engine = ReadinessEngine()
+            readiness = readiness_engine.compute_readiness(
+                application=db_app,
+                spec=spec,
+                filled_slots=session.filled_slots or {},
+                documents=db_app.documents or [],
+                anomaly_score=session.anomaly_score or 0.0,
+            )
+            self.app_repo.update_validation_summary(
+                application_id=session.application_id,
+                summary={
+                    "readiness_score": readiness.overall_score,
+                    "status": readiness.status,
+                    "all_docs_uploaded": readiness.document_coverage >= 100.0,
+                    "all_docs_validated": status == "VERIFIED",
+                    "unresolved_mismatches": len(mismatch_fields),
+                },
+                overall_match_score=match_res.overall_score,
+            )
+
+        # ── Step B: Determine Next Question or Transition ──────────────────
         if status == "VERIFIED":
-            response_msg = matcher._all_match_message(match_res, session.language)
+            # Document verified successfully — query NextQuestionEngine for the next missing slot
+            nq_result = self.next_q_engine.get_next_slot(
+                service_id=db_app.service_id if db_app else "",
+                filled_slots=session.filled_slots or {},
+                ocr_fields=session.ocr_fields or active_normalized_fields,
+            )
+
+            confirm_header = self._multilang_msg(session.language, {
+                "en": f"✅ Your {doc_type.replace('_', ' ').title()} details have been verified successfully! (Match score: {match_res.overall_score:.1f}%)\n\n",
+                "hi": f"✅ आपके {doc_type.replace('_', ' ')} का विवरण सफलतापूर्वक सत्यापित हो गया है! (मिलान स्कोर: {match_res.overall_score:.1f}%)\n\n",
+                "mr": f"✅ तुमचे {doc_type.replace('_', ' ')} तपशील यशस्वीरित्या पडताळले गेले आहेत! (साम्य गुण: {match_res.overall_score:.1f}%)\n\n",
+            })
+
+            if nq_result.has_next and nq_result.slot_name:
+                # More missing slots — advance conversation to next required field
+                session.pending_field = nq_result.slot_name
+                session.missing_slots = nq_result.missing_slots
+                session.current_node = "SLOT_FILLING"
+                next_prompt = self._get_next_slot_prompt_llm(session, spec, nq_result)
+                session.pending_question = next_prompt
+                response_msg = f"{confirm_header}{next_prompt}"
+            else:
+                # All slots filled — check if more required documents are missing
+                req_docs = [d["type"] if isinstance(d, dict) else d for d in (spec.required_docs if spec else [])]
+                uploaded_docs = [d.doc_type for d in (db_app.documents or []) if d.verification_status != "REJECTED"]
+                missing_docs = [d for d in req_docs if d not in uploaded_docs]
+
+                if missing_docs:
+                    session.current_node = "DOCUMENT_CAPTURE"
+                    session.pending_field = None
+                    session.pending_question = None
+                    missing_str = ", ".join([d.replace("_", " ").title() for d in missing_docs])
+                    response_msg = confirm_header + self._multilang_msg(session.language, {
+                        "en": f"Please upload your next required document: *{missing_str}* using the attachment button.",
+                        "hi": f"कृपया अपना अगला आवश्यक दस्तावेज़ अपलोड करें: *{missing_str}*",
+                        "mr": f"कृपया पुढील आवश्यक कागदपत्र अपलोड करा: *{missing_str}*",
+                    })
+                else:
+                    session.current_node = "FINAL_REVIEW"
+                    session.pending_field = None
+                    session.pending_question = None
+                    from app.orchestration.state_machine.application_fsm import AppState
+                    self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
+                    response_msg = confirm_header + self._multilang_msg(session.language, {
+                        "en": "All required information and documents have been verified. Your application is ready for review.",
+                        "hi": "सभी आवश्यक जानकारी और दस्तावेज़ सत्यापित हो गए हैं। आपका आवेदन समीक्षा के लिए तैयार है।",
+                        "mr": "सर्व आवश्यक माहिती आणि कागदपत्रे पडताळली गेली आहेत. तुमचा अर्ज पुनरावलोकनासाठी तयार आहे.",
+                    })
 
         elif status == "INCOMPLETE":
-            msgs = {
+            response_msg = self._multilang_msg(session.language, {
                 "en": (
                     f"📄 Document ({doc_type}) uploaded.\n"
                     f"⚠️ No text could be extracted from this document. "
-                    f"Please ensure the image is clear and Tesseract OCR is installed "
-                    f"at C:\\Program Files\\Tesseract-OCR\\tesseract.exe."
+                    f"Please ensure the image is clear."
                 ),
                 "hi": (
                     f"📄 आपका दस्तावेज़ ({doc_type}) अपलोड हो गया।\n"
-                    f"⚠️ दस्तावेज़ से कोई भी फ़ील्ड निकाला नहीं जा सका। "
-                    f"Tesseract OCR इंस्टॉल होना आवश्यक है।"
+                    f"⚠️ दस्तावेज़ से कोई भी फ़ील्ड निकाला नहीं जा सका।"
                 ),
                 "mr": (
                     f"📄 तुमचे कागदपत्र ({doc_type}) अपलोड झाले.\n"
                     f"⚠️ कागदपत्रातून कोणताही तपशील काढता आला नाही."
                 ),
-            }
-            response_msg = msgs.get(session.language, msgs["en"])
-
+            })
         else:
-            # MISMATCH — use MatchingService (tries Gemini, then structured template)
+            # MISMATCH
+            if _valid_transition(session.current_node, "CORRECTION_PROMPT"):
+                session.current_node = "CORRECTION_PROMPT"
             response_msg = matcher.generate_mismatch_message(
                 match_res, language=session.language, use_gemini=True
             )
 
-        # ── State transition & Next Process Connection ──────────────────────
-        if status == "MISMATCH":
-            if _valid_transition(session.current_node, "CORRECTION_PROMPT"):
-                session.current_node = "CORRECTION_PROMPT"
-                logger.info(f"[OCR_STATE_CONNECT] Mismatch detected. Transitioned state to CORRECTION_PROMPT")
-        elif status == "VERIFIED":
-            if session.current_node in ("DOCUMENT_CAPTURE", "DOCUMENT_VERIFY"):
-                db_app = self.app_repo.get_by_id(session.application_id)
-                if db_app:
-                    spec = ServiceSpecLoader.get(db_app.service_id)
-                    req_docs = [d["type"] if isinstance(d, dict) else d for d in (spec.required_docs if spec else [])]
-                    uploaded_docs = [d.doc_type for d in (db_app.documents or []) if d.verification_status != "REJECTED"]
-                    if all(rd in uploaded_docs for rd in req_docs):
-                        from app.orchestration.state_machine.application_fsm import AppState
-                        self.app_repo.update_status(session.application_id, AppState.PENDING_OFFICER_PRE_APPROVAL)
-                        logger.info(f"[OCR_STATE_CONNECT] All proof documents verified for App {session.application_id}. Transitioned status to PENDING_OFFICER_PRE_APPROVAL")
-
-        # ── Store as chat message — CRITICAL: citizen must see this in chat ─
+        # ── Store as chat message — citizen sees this in chat ──────────────
         self.session_repo.add_message(
             session_id=session.id,
             role="ASSISTANT",
@@ -1374,7 +1515,7 @@ class ConversationOrchestrator:
             "matched_fields": match_res.matched_fields,
             "fields_not_in_doc": fields_not_in_doc,
             "fields_in_doc_only": match_res.fields_only_in_doc,
-            "confidence_score": confidence_score,
+            "confidence_score": norm_conf_avg,
             "overall_score": match_res.overall_score,
             "field_scores": match_res.field_scores,
             "can_auto_resolve": report.can_auto_resolve,
@@ -1382,6 +1523,22 @@ class ConversationOrchestrator:
             "summary": report.summary,
             "response": response_msg,
             "current_node": session.current_node,
+            "pending_field": session.pending_field,
+            "pending_question": session.pending_question,
+            "raw_ocr": {
+                "text": raw_ocr_text or "",
+                "fields": active_raw_fields,
+            },
+            "normalized_ocr": {
+                "fields": active_normalized_fields,
+                "confidence": normalization_confidence or {},
+            },
+            "matching": {
+                "score": match_res.overall_score,
+                "status": status,
+                "matched_fields": match_res.matched_fields,
+                "mismatched_fields": mismatch_fields,
+            },
         }
 
     def _is_cross_question(self, text: str) -> bool:
@@ -1390,13 +1547,6 @@ class ConversationOrchestrator:
         question_words = ["why", "what", "how", "where", "when", "can i", "is it", "का", "क्यों", "क्या", "कैसे"]
         is_q = any(w in text_lower for w in question_words) or text_lower.endswith("?")
         return is_q and len(text_lower.split()) > 2
-
-    def _handle_cross_question(self, session, raw_text, nlu_result, spec):
-        """Answer citizen digression using RAG/LLM, then resume pending slot."""
-        rag_answer = self.rag.answer_question(raw_text, session.language)
-        next_prompt = self._get_next_slot_prompt(session, spec)
-        combined_response = f"{rag_answer}\n\n{next_prompt}"
-        return combined_response, "SLOT_FILLING", {"cross_question_handled": True}
 
 
 

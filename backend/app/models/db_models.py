@@ -254,19 +254,26 @@ class Document(Base):
     upload_source_ref = Column(String(256), nullable=True) # WhatsApp media_id or upload ref
 
     # OCR results
-    extracted_fields = Column(JSON, default=dict)          # Raw OCR output (locally processed)
-    confidence_score = Column(Float, default=1.0)
+    raw_ocr_text = Column(Text, nullable=True)             # Raw Tesseract OCR output
+    raw_extracted_fields = Column(JSON, default=dict)      # Deterministic regex extracted fields
+    normalized_fields = Column(JSON, default=dict)         # OpenRouter normalized fields
+    normalization_status = Column(String(32), default="PENDING") # PENDING | AI_NORMALIZED | DETERMINISTIC
+    normalization_confidence = Column(JSON, default=dict)  # {"applicant_name": 0.96}
+
+    extracted_fields = Column(JSON, default=dict)          # Active / normalized OCR output
+    confidence_score = Column(Float, default=1.0)          # Normalization confidence score
 
     # Field-level match scoring against ApplicationData
     field_match_scores = Column(JSON, default=dict)
     # {"full_name": {"app_value": "...", "ocr_value": "...", "score": 87.0, "match": false},
     #  "dob": {"app_value": "...", "ocr_value": "...", "score": 100.0, "match": true}}
 
-    overall_match_score = Column(Float, nullable=True)     # e.g. 93.0
+    matched_fields = Column(JSON, default=list)            # List of field names matching application data
+    overall_match_score = Column(Float, nullable=True)     # e.g. 100.0
 
     # Verification status
     verification_status = Column(String(32), default="PENDING")
-    # PENDING | OCR_PROCESSING | VALIDATING | MATCHED | REVIEW_REQUIRED | VALIDATION_FAILED
+    # PENDING | OCR_PROCESSING | VALIDATING | MATCHED | VERIFIED | MISMATCH | REVIEW_REQUIRED | VALIDATION_FAILED
 
     mismatch_fields = Column(JSON, default=list)           # List of field names with mismatch
     mismatch_resolutions = Column(JSON, default=dict)

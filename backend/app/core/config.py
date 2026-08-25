@@ -8,9 +8,13 @@ If the required API key is missing, the server will REFUSE TO START with a clear
 There is no automatic fallback between providers.
 """
 import json
+import os
+from pathlib import Path
 from typing import List, Optional, Any, Union
 from pydantic_settings import BaseSettings
 from pydantic import field_validator, model_validator
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -23,7 +27,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "revenue-services-dev-secret-key-change-in-production"
 
     # Database
-    DATABASE_URL: str = "sqlite:///./revenue_services.db"
+    DATABASE_URL: str = f"sqlite:///{BACKEND_DIR / 'revenue_services.db'}"
 
     # API
     API_V1_PREFIX: str = "/api/v1"
@@ -47,7 +51,7 @@ class Settings(BaseSettings):
 
     # OpenRouter (Primary default — 200+ models via single API key)
     OPENROUTER_API_KEY: Optional[str] = None
-    OPENROUTER_MODEL: str = "openrouter/auto"
+    OPENROUTER_MODEL: str = "minimax/minimax-m3:free"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MAX_TOKENS: int = 100
 
@@ -73,11 +77,11 @@ class Settings(BaseSettings):
     DOCUMENT_ADAPTER: str = "mock"
     NOTIFICATION_ADAPTER: str = "mock"
 
-    # Storage paths (local filesystem for POC)
-    STORAGE_PATH: str = "./data/uploads"
-    RECEIPT_PATH: str = "./data/receipts"
-    CERTIFICATE_PATH: str = "./data/certificates"
-    AUDIO_PATH: str = "./data/audio"
+    # Storage paths (anchored to backend directory for POC)
+    STORAGE_PATH: str = str(BACKEND_DIR / "data" / "uploads")
+    RECEIPT_PATH: str = str(BACKEND_DIR / "data" / "receipts")
+    CERTIFICATE_PATH: str = str(BACKEND_DIR / "data" / "certificates")
+    AUDIO_PATH: str = str(BACKEND_DIR / "data" / "audio")
 
     # Session
     SESSION_TTL_MINUTES: int = 30
@@ -91,11 +95,11 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "Admin@123"
 
     # OCR Configuration
-    TESSERACT_CMD: Optional[str] = None
+    TESSERACT_CMD: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     TESSERACT_PATH: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
     # Service specs directory
-    SERVICE_SPECS_DIR: str = "./seed/service_specs"
+    SERVICE_SPECS_DIR: str = str(BACKEND_DIR / "seed" / "service_specs")
 
     # JWT
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 480   # 8 hours
@@ -108,6 +112,35 @@ class Settings(BaseSettings):
                 return json.loads(v)
             except Exception:
                 return [origin.strip() for origin in v.split(",")]
+        return v
+
+    @field_validator(
+        "SERVICE_SPECS_DIR",
+        "STORAGE_PATH",
+        "RECEIPT_PATH",
+        "CERTIFICATE_PATH",
+        "AUDIO_PATH",
+        mode="after",
+    )
+    @classmethod
+    def resolve_backend_relative_path(cls, v: str) -> str:
+        if v and not os.path.isabs(v):
+            cleaned = v.replace("\\", "/").lstrip("./")
+            if cleaned.startswith("backend/"):
+                cleaned = cleaned[8:]
+            return str(BACKEND_DIR / cleaned)
+        return v
+
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def resolve_database_url(cls, v: str) -> str:
+        if v and v.startswith("sqlite:///"):
+            raw_path = v[10:]
+            if not os.path.isabs(raw_path):
+                cleaned = raw_path.replace("\\", "/").lstrip("./")
+                if cleaned.startswith("backend/"):
+                    cleaned = cleaned[8:]
+                return f"sqlite:///{BACKEND_DIR / cleaned}"
         return v
 
     @model_validator(mode="after")
@@ -154,7 +187,14 @@ class Settings(BaseSettings):
         return self
 
     model_config = {
-        "env_file": [".env", "backend/.env", "../.env"],
+        "env_file": [
+            str(BACKEND_DIR / ".env"),
+            str(BACKEND_DIR.parent / ".env"),
+            ".env",
+            "backend/.env",
+            "../.env",
+            "../../.env",
+        ],
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }

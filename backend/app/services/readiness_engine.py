@@ -58,9 +58,23 @@ class ReadinessResult:
     can_submit: bool                  # overall_score ≥ 75 and no blocking issues
     components: List[ReadinessComponent]
     blocking_issues: List[str]        # Issues that prevent submission
-    warnings: List[str]               # Non-blocking issues
+    warnings: List[str] = field(default_factory=list)  # Non-blocking issues
     service_id: str = ""
     computed_at: str = ""
+
+    @property
+    def document_coverage(self) -> float:
+        for c in self.components:
+            if "Document" in c.name:
+                return c.pct
+        return 100.0 if self.overall_score >= 90 else 0.0
+
+    @property
+    def field_completeness(self) -> float:
+        for c in self.components:
+            if "Field" in c.name:
+                return c.pct
+        return 100.0 if self.overall_score >= 90 else 0.0
 
     def to_dict(self) -> Dict:
         return {
@@ -108,6 +122,36 @@ class ReadinessEngine:
         (60, "MODERATE_ISSUES"),
         (0,  "MAJOR_ISSUES"),
     ]
+
+    def compute_readiness(
+        self,
+        application: Any,
+        spec: Any,
+        filled_slots: Dict[str, Any],
+        documents: List[Any],
+        anomaly_score: float = 0.0,
+    ) -> ReadinessResult:
+        """Convenience method to compute application readiness directly from entities."""
+        required_slots = [s.name for s in (spec.slots if spec else []) if getattr(s, "required", True)]
+        required_docs = [d["type"] if isinstance(d, dict) else d for d in (spec.required_docs if spec else [])]
+        uploaded_docs = [d.doc_type for d in (documents or []) if getattr(d, "verification_status", "") != "REJECTED"]
+        ocr_results = [
+            {
+                "doc_type": d.doc_type,
+                "overall_score": getattr(d, "overall_match_score", 100.0) or 100.0,
+                "confidence_score": getattr(d, "confidence_score", 1.0) or 1.0,
+                "status": getattr(d, "verification_status", "VERIFIED"),
+            }
+            for d in (documents or [])
+        ]
+        return self.compute(
+            service_id=getattr(application, "service_id", ""),
+            filled_slots=filled_slots,
+            required_slots=required_slots,
+            required_docs=required_docs,
+            uploaded_docs=uploaded_docs,
+            ocr_results=ocr_results,
+        )
 
     def compute(
         self,

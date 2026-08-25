@@ -7,13 +7,28 @@ Rate limiting + Security middleware — Phase 14
 """
 import time
 import logging
+import datetime
 from collections import defaultdict, deque
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from jose import jwt
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def create_access_token(data: Dict[str, Any], expires_delta: Optional[datetime.timedelta] = None) -> str:
+    """Utility to create signed JWT access tokens."""
+    payload = data.copy()
+    expire = datetime.datetime.utcnow() + (
+        expires_delta or datetime.timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    payload["exp"] = expire
+    payload["iat"] = datetime.datetime.utcnow()
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
 # ── Simple In-Memory Rate Limiter ──────────────────────────────────────────

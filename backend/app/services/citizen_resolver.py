@@ -110,3 +110,19 @@ class CitizenResolver:
             verified=True,
         )
         return True
+
+    @staticmethod
+    def resolve_citizen_ref(identifier: str, db: Session) -> str:
+        """Resolve any channel identifier string to authoritative citizen_ref."""
+        resolver = CitizenResolver(db)
+        if not identifier:
+            c = resolver.citizen_repo.resolve_or_create("default_user")
+            return c.citizen_ref
+        c = resolver.citizen_repo.get_by_ref(identifier)
+        if c:
+            return c.citizen_ref
+        c = resolver.resolve(phone=identifier, email=identifier if "@" in identifier else None)
+        if c:
+            return c.citizen_ref
+        c = resolver.citizen_repo.resolve_or_create(identifier)
+        return c.citizen_ref

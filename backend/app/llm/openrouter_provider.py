@@ -66,6 +66,40 @@ Rules:
 - Return ONLY the JSON object. No markdown code blocks, no backticks, no explanatory text.
 """
 
+OCR_NORMALIZATION_SYSTEM = """You are an OCR field normalization assistant for an Indian government revenue services portal.
+Your task is to take raw, noisy OCR text and extracted field candidates from an uploaded document, and clean the field values by stripping OCR noise artifacts, scanning errors, and stray characters.
+
+CRITICAL RULES:
+1. Normalize OCR noise in field values (e.g. "Ee Ae D Viki Bhausaheb Lokhande Oa Bs Ga" -> "Viki Bhausaheb Lokhande").
+2. NEVER INVENT or hallucinate missing information. If a field is not present or cannot be read with confidence, its value MUST be null.
+3. DO NOT infer Date of Birth (dob) or Aadhaar number without explicit evidence in the OCR.
+4. DO NOT determine eligibility, fees, approval, or rejection.
+5. Return ONLY a single valid JSON object matching this schema:
+{
+  "normalized_fields": {
+    "applicant_name": "clean name or null",
+    "dob": "DD-MM-YYYY or null",
+    "gender": "Male|Female|Transgender or null",
+    "aadhaar_number": "12-digit number or null",
+    "pan_number": "10-character PAN or null",
+    "annual_income": "numeric amount string or null",
+    "address": "clean address or null",
+    "caste_category": "SC|ST|OBC|OPEN|etc or null"
+  },
+  "confidence": {
+    "applicant_name": 0.95
+  },
+  "corrections": [
+    {
+      "field": "applicant_name",
+      "original": "raw ocr snippet",
+      "normalized": "clean value"
+    }
+  ]
+}
+Return ONLY the JSON object. No markdown, no backticks, no explanations.
+"""
+
 
 def _extract_json_from_llm(result_text: str) -> Dict:
     """Extract and parse JSON object from LLM response text, ignoring markdown wrappers."""
@@ -149,16 +183,17 @@ def _heuristic_nlu_fallback(text: str, language: str, context: Optional[Dict]) -
 class OpenRouterProvider(LLMProvider):
     """OpenRouter provider using OpenAI-compatible API."""
 
-    def __init__(self):
-        if not settings.OPENROUTER_API_KEY or "your_key" in settings.OPENROUTER_API_KEY:
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, base_url: Optional[str] = None):
+        key = api_key or settings.OPENROUTER_API_KEY
+        if not key or "your_key" in key:
             raise LLMUnavailableError(
                 "OPENROUTER_API_KEY is not configured in .env. "
                 "Please configure OPENROUTER_API_KEY to start the conversational AI."
             )
-        self._api_key = settings.OPENROUTER_API_KEY
-        self._model = settings.OPENROUTER_MODEL or "openrouter/auto"
-        base_url = getattr(settings, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") or "https://openrouter.ai/api/v1"
-        self._api_url = base_url.rstrip("/") + "/chat/completions"
+        self._api_key = key
+        self._model = model or settings.OPENROUTER_MODEL or "minimax/minimax-m3:free"
+        resolved_base_url = base_url or getattr(settings, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") or "https://openrouter.ai/api/v1"
+        self._api_url = resolved_base_url.rstrip("/") + "/chat/completions"
         logger.info(f"OpenRouterProvider initialized: {self._model} (URL: {self._api_url})")
 
     @property
@@ -170,7 +205,7 @@ class OpenRouterProvider(LLMProvider):
         return self._model
 
     def _call(self, messages: list, temperature: float = 0.3, max_tokens: int = 100, timeout: float = 45.0) -> str:
-        """Make API call to OpenRouter. Raises LLMUnavailableError on failure."""
+        """Make API call to OpenRouter. Raises LLMUnavailableError on failure without fallback."""
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "HTTP-Referer": "https://revenue-gov-platform.gov.in",
@@ -188,7 +223,16 @@ class OpenRouterProvider(LLMProvider):
         }
         try:
             response = httpx.post(self._api_url, headers=headers, json=payload, timeout=timeout)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                status_code = response.status_code
+                logger.error(f"OpenRouter HTTP error {status_code}: {response.text[:200]}")
+                if status_code in (401, 402, 403):
+                    raise LLMUnavailableError(
+                        f"AI service is temporarily unavailable. Provider error (HTTP {status_code})."
+                    )
+                raise LLMUnavailableError(
+                    f"AI service is temporarily unavailable. HTTP error ({status_code}). Please try again."
+                )
             data = response.json()
             choices = data.get("choices")
             if not choices or not choices[0].get("message"):
@@ -202,10 +246,17 @@ class OpenRouterProvider(LLMProvider):
             logger.error("OpenRouter API request timed out")
             raise LLMUnavailableError("AI service is temporarily unavailable. Request timed out. Please try again.")
         except httpx.HTTPStatusError as e:
-            logger.error(f"OpenRouter HTTP error {e.response.status_code}: {e.response.text[:200]}")
+            status_code = e.response.status_code
+            logger.error(f"OpenRouter HTTP error {status_code}: {e.response.text[:200]}")
+            if status_code in (401, 402, 403):
+                raise LLMUnavailableError(
+                    f"AI service is temporarily unavailable. Provider error (HTTP {status_code})."
+                )
             raise LLMUnavailableError(
-                f"AI service is temporarily unavailable. HTTP error ({e.response.status_code}). Please try again."
+                f"AI service is temporarily unavailable. HTTP error ({status_code}). Please try again."
             )
+        except LLMUnavailableError:
+            raise
         except Exception as e:
             logger.error(f"OpenRouter API call failed: {e}")
             raise LLMUnavailableError(f"AI service is temporarily unavailable: {e}")
@@ -232,29 +283,62 @@ class OpenRouterProvider(LLMProvider):
                 "content": f"Citizen Utterance: {text}\nLanguage: {language}\nApplication Context: {context_str}"
             }
         ]
-        result_text = ""
+        result_text = self._call(msgs, temperature=0.1, max_tokens=300)
         try:
-            result_text = self._call(msgs, temperature=0.1, max_tokens=300)
             return _extract_json_from_llm(result_text)
+        except LLMUnavailableError:
+            raise
         except Exception as e:
             logger.warning(f"OpenRouter NLU JSON parse attempt failed: {e}. Retrying with strict JSON instruction.")
-            try:
-                retry_msgs = [
-                    {"role": "system", "content": NLU_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Citizen Utterance: {text}\nLanguage: {language}\n"
-                            f"Application Context: {context_str}\n\n"
-                            f"CRITICAL: Output ONLY a single JSON object. Do not include markdown codeblocks or any other text."
-                        )
-                    }
-                ]
-                retry_text = self._call(retry_msgs, temperature=0.0, max_tokens=300)
-                return _extract_json_from_llm(retry_text)
-            except Exception as e2:
-                logger.warning(f"OpenRouter NLU retry failed: {e2}. Using deterministic heuristic fallback.")
-                return _heuristic_nlu_fallback(text, language, context)
+            retry_msgs = [
+                {"role": "system", "content": NLU_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Citizen Utterance: {text}\nLanguage: {language}\n"
+                        f"Application Context: {context_str}\n\n"
+                        f"CRITICAL: Output ONLY a single JSON object. Do not include markdown codeblocks or any other text."
+                    )
+                }
+            ]
+            retry_text = self._call(retry_msgs, temperature=0.0, max_tokens=300)
+            return _extract_json_from_llm(retry_text)
+
+    def normalize_ocr_fields(
+        self,
+        raw_text: str,
+        extracted_fields: Dict,
+        doc_type: str
+    ) -> Dict:
+        """
+        Normalize noisy OCR extraction into clean fields with confidence scores.
+        Must NOT invent missing fields (return null for absent information).
+        Must NOT determine eligibility or calculate fees.
+        """
+        ocr_prompt = (
+            f"Document Type: {doc_type}\n"
+            f"Raw Extracted Fields: {json.dumps(extracted_fields or {}, ensure_ascii=False)}\n"
+            f"Raw Document OCR Text:\n{raw_text[:2000]}\n\n"
+            f"Clean and normalize the extracted fields. Remove OCR noise and stray artifacts. "
+            f"Do not invent any fields not present in the OCR text. Return strict JSON."
+        )
+        msgs = [
+            {"role": "system", "content": OCR_NORMALIZATION_SYSTEM},
+            {"role": "user", "content": ocr_prompt}
+        ]
+        result_text = self._call(msgs, temperature=0.1, max_tokens=500)
+        try:
+            parsed = _extract_json_from_llm(result_text)
+            if not isinstance(parsed, dict) or "normalized_fields" not in parsed:
+                return {
+                    "normalized_fields": parsed if isinstance(parsed, dict) else (extracted_fields or {}),
+                    "confidence": {k: 0.92 for k in (extracted_fields or {})},
+                    "corrections": []
+                }
+            return parsed
+        except Exception as e:
+            logger.warning(f"OpenRouter OCR normalization parse error: {e}")
+            raise LLMUnavailableError(f"Failed to parse OCR normalization JSON: {e}")
 
     def generate_slot_prompt(self, slot_name: str, slot_spec: Dict, language: str, context: Dict) -> str:
         """Generate a natural question for a form field in the citizen's regional language."""

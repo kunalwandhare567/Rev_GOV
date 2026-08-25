@@ -23,7 +23,7 @@ async def get_status_by_tracking_id(tracking_id: str, db: Session = Depends(get_
     Does NOT return any PII.
     """
     app_repo = ApplicationRepository(db)
-    app = app_repo.get_by_tracking_id(tracking_id)
+    app = app_repo.get_by_tracking_id(tracking_id) or app_repo.get_by_number(tracking_id)
 
     if not app:
         raise HTTPException(status_code=404, detail=f"No application found with tracking ID: {tracking_id}")

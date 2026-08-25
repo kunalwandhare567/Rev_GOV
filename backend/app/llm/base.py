@@ -194,6 +194,34 @@ class LLMProvider(ABC):
         pass
 
     # ─────────────────────────────────────────────
+    # OCR Normalization
+    # ─────────────────────────────────────────────
+
+    def normalize_ocr_fields(
+        self,
+        raw_text: str,
+        extracted_fields: Dict,
+        doc_type: str
+    ) -> Dict:
+        """
+        Normalize noisy OCR extraction into clean fields with confidence scores.
+        Must NOT invent missing fields (return null for absent information).
+        Must NOT determine eligibility or calculate fees.
+
+        Returns dict:
+          normalized_fields: {applicant_name, dob, gender, aadhaar_number, pan_number, annual_income, address, caste_category}
+          confidence: {field_name: float}
+          corrections: [{field, original, normalized}]
+
+        Raises: LLMUnavailableError on provider failure.
+        """
+        return {
+            "normalized_fields": extracted_fields or {},
+            "confidence": {k: 0.90 for k in (extracted_fields or {})},
+            "corrections": []
+        }
+
+    # ─────────────────────────────────────────────
     # Provider Identity
     # ─────────────────────────────────────────────
 

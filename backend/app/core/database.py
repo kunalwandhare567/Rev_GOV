@@ -58,6 +58,25 @@ def auto_migrate_schema():
                 except Exception:
                     pass
 
+        # Check documents table
+        res = conn.execute(text("PRAGMA table_info(documents)")).fetchall()
+        doc_cols = [r[1] for r in res]
+        doc_cols_to_add = [
+            ("raw_ocr_text", "TEXT"),
+            ("raw_extracted_fields", "JSON"),
+            ("normalized_fields", "JSON"),
+            ("normalization_status", "VARCHAR(32)"),
+            ("normalization_confidence", "JSON"),
+            ("matched_fields", "JSON"),
+        ]
+        for col_name, col_type in doc_cols_to_add:
+            if col_name not in doc_cols:
+                try:
+                    conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                except Exception:
+                    pass
+
 try:
     auto_migrate_schema()
 except Exception:

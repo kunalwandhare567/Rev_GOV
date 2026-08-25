@@ -25,9 +25,18 @@ class OCRResult:
     doc_type_detected: str
     confidence: float
     provider: str
+    raw_fields: Optional[Dict[str, Any]] = None
+    normalized_fields: Optional[Dict[str, Any]] = None
+    normalization_metadata: Optional[Dict[str, Any]] = None
     confidence_breakdown: Optional[Dict[str, float]] = None
 
     def __post_init__(self):
+        if self.raw_fields is None:
+            self.raw_fields = dict(self.extracted_fields or {})
+        if self.normalized_fields is None:
+            self.normalized_fields = dict(self.extracted_fields or {})
+        if self.normalization_metadata is None:
+            self.normalization_metadata = {}
         if self.confidence_breakdown is None:
             self.confidence_breakdown = {k: self.confidence for k in self.extracted_fields}
 
@@ -154,6 +163,30 @@ class OCRService:
 
         return "+".join(valid_tokens)
 
+    def _clean_ocr_text(self, text: str) -> str:
+        """
+        Deterministic preprocessing to clean noisy OCR output:
+        - Normalizes whitespace and line breaks
+        - Removes obvious OCR punctuation noise (~, ^, |, «, », etc.)
+        - Normalizes dates and number formatting
+        - Does NOT aggressively rewrite words or invent missing data
+        """
+        if not text:
+            return ""
+
+        # Normalize line breaks and tabs
+        cleaned = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+        # Strip common OCR artifact characters
+        cleaned = re.sub(r'[\~\|\^\_«»\<\>\{\}\[\];]+', ' ', cleaned)
+        # Collapse multiple spaces
+        lines = []
+        for line in cleaned.split("\n"):
+            line_str = re.sub(r'\s+', ' ', line).strip()
+            if line_str:
+                lines.append(line_str)
+
+        return "\n".join(lines)
+
     def run_ocr(
         self,
         file_path: str,
@@ -161,10 +194,12 @@ class OCRService:
         language: str = "eng+hin+mar"
     ) -> OCRResult:
         """
-        Execute deterministic local OCR pipeline:
+        Execute deterministic local OCR pipeline with optional OpenRouter normalization:
         1. Extract text via Tesseract OCR / PyMuPDF.
-        2. Detect document type if not provided.
-        3. Deterministically extract structured fields (Name, DOB, Aadhaar, Income, PAN, etc.).
+        2. Clean text deterministically (_clean_ocr_text).
+        3. Detect document type if not provided.
+        4. Deterministically extract structured fields (Name, DOB, Aadhaar, Income, PAN, etc.).
+        5. Optionally normalize fields via OpenRouter (with fail-fast non-fallback).
         """
         logger.info(f"[OCR_START] File: '{file_path}', Type: '{doc_type}', Lang: '{language}'")
 
@@ -173,6 +208,8 @@ class OCRService:
             return OCRResult(
                 raw_text="",
                 extracted_fields={},
+                raw_fields={},
+                normalized_fields={},
                 doc_type_detected=doc_type or "UNKNOWN",
                 confidence=0.0,
                 provider="error"
@@ -180,23 +217,59 @@ class OCRService:
 
         resolved_lang = self._resolve_ocr_language(language)
         raw_text = self._extract_text(file_path, resolved_lang)
-        detected_type = doc_type or self.detect_document_type(raw_text)
+        cleaned_text = self._clean_ocr_text(raw_text)
+        detected_type = doc_type or self.detect_document_type(cleaned_text or raw_text)
 
         if raw_text and raw_text.strip():
-            extracted_fields = self._extract_fields(raw_text, detected_type)
+            raw_fields = self._extract_fields(cleaned_text or raw_text, detected_type)
             provider = "tesseract" if self.is_tesseract_available else "pymupdf_or_mock"
             base_confidence = 0.90 if self.is_tesseract_available else 0.75
         else:
-            extracted_fields = {}
+            raw_fields = {}
             provider = "mock"
             base_confidence = 0.0
             logger.warning(f"[OCR_EMPTY] No text extracted from '{file_path}'")
 
-        breakdown = {k: base_confidence for k in extracted_fields}
+        breakdown = {k: base_confidence for k in raw_fields}
+        normalized_fields = dict(raw_fields)
+        norm_metadata = {"status": "deterministic_only", "ai_normalized": False}
+
+        # Attempt OpenRouter normalization if LLM is available
+        if raw_fields or cleaned_text:
+            try:
+                from app.llm.llm_service import LLMService
+                from app.data_guard.guard import DataGuard
+                guard = DataGuard()
+                guard.check(
+                    payload={"raw_text": cleaned_text[:1500], "fields": raw_fields},
+                    destination="OPENROUTER",
+                    caller="OCRService",
+                    operation="NORMALIZE_OCR",
+                    data_classification="SYNTHETIC",
+                )
+                llm = LLMService()
+                norm_res = llm.normalize_ocr_fields(cleaned_text, raw_fields, detected_type)
+                if norm_res and isinstance(norm_res, dict):
+                    ai_fields = norm_res.get("normalized_fields") or {}
+                    for k, v in ai_fields.items():
+                        if v is not None and str(v).strip():
+                            normalized_fields[k] = str(v).strip()
+                    if norm_res.get("confidence"):
+                        breakdown.update(norm_res.get("confidence"))
+                    norm_metadata = {
+                        "status": "ai_normalized",
+                        "ai_normalized": True,
+                        "corrections": norm_res.get("corrections", [])
+                    }
+            except Exception as e:
+                logger.info(f"[OCR_AI_NORM_SKIPPED] OpenRouter normalization not applied ({e}); using deterministic fields.")
 
         result = OCRResult(
             raw_text=raw_text or "",
-            extracted_fields=extracted_fields,
+            extracted_fields=normalized_fields,
+            raw_fields=raw_fields,
+            normalized_fields=normalized_fields,
+            normalization_metadata=norm_metadata,
             doc_type_detected=detected_type,
             confidence=base_confidence,
             provider=provider,
@@ -205,7 +278,7 @@ class OCRService:
 
         logger.info(
             f"[OCR_COMPLETED] Provider={result.provider}, Type={result.doc_type_detected}, "
-            f"Fields={list(extracted_fields.keys())}"
+            f"Fields={list(normalized_fields.keys())}, AI_Norm={norm_metadata.get('ai_normalized')}"
         )
         return result
 

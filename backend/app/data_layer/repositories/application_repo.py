@@ -71,7 +71,7 @@ class ApplicationRepository:
         self,
         citizen_ref: str,
         service_id: str,
-        channel_origin: str,
+        channel_origin: str = "WEB",
         language: str = "en",
     ) -> Application:
         """Create a new application in DRAFT status."""
@@ -108,9 +108,20 @@ class ApplicationRepository:
         ).first()
 
     def get_by_citizen(self, citizen_ref: str, limit: int = 20) -> List[Application]:
+        from app.data_layer.repositories.citizen_repo import CitizenRepository
+        c_repo = CitizenRepository(self.db)
+        c = c_repo.get_by_ref(citizen_ref) or c_repo.get_by_identifier(citizen_ref)
+        refs = {citizen_ref}
+        if c:
+            refs.add(c.citizen_ref)
+            if c.phone:
+                refs.add(c.phone)
+            if c.email:
+                refs.add(c.email)
+
         return (
             self.db.query(Application)
-            .filter(Application.citizen_ref == citizen_ref)
+            .filter(Application.citizen_ref.in_(refs))
             .order_by(Application.created_at.desc())
             .limit(limit)
             .all()
@@ -316,27 +327,81 @@ class ApplicationRepository:
         file_ref: str,
         extracted_fields: Optional[Dict] = None,
         confidence_score: float = 1.0,
+        raw_ocr_text: Optional[str] = None,
+        raw_extracted_fields: Optional[Dict] = None,
+        normalized_fields: Optional[Dict] = None,
+        normalization_status: Optional[str] = None,
+        normalization_confidence: Optional[Dict] = None,
+        overall_match_score: Optional[float] = None,
+        matched_fields: Optional[List] = None,
+        field_match_scores: Optional[Dict] = None,
+        verification_status: Optional[str] = None,
     ) -> Document:
-        doc = Document(
-            application_id=application_id,
-            doc_type=doc_type,
-            file_ref=file_ref,
-            extracted_fields=extracted_fields or {},
-            confidence_score=confidence_score,
-            verification_status="PENDING",
+        """Create or update document record in SQLite (prevents duplicate document entries)."""
+        doc = (
+            self.db.query(Document)
+            .filter(Document.application_id == application_id, Document.doc_type == doc_type)
+            .first()
         )
-        self.db.add(doc)
+        if not doc:
+            doc = Document(
+                application_id=application_id,
+                doc_type=doc_type,
+                file_ref=file_ref,
+                extracted_fields=extracted_fields or {},
+                confidence_score=confidence_score,
+                verification_status=verification_status or "PENDING",
+            )
+            self.db.add(doc)
+        else:
+            doc.file_ref = file_ref
+            doc.extracted_fields = extracted_fields or doc.extracted_fields or {}
+            doc.confidence_score = confidence_score
+            if verification_status:
+                doc.verification_status = verification_status
+
+        if raw_ocr_text is not None:
+            doc.raw_ocr_text = raw_ocr_text
+        if raw_extracted_fields is not None:
+            doc.raw_extracted_fields = raw_extracted_fields
+        if normalized_fields is not None:
+            doc.normalized_fields = normalized_fields
+        if normalization_status is not None:
+            doc.normalization_status = normalization_status
+        if normalization_confidence is not None:
+            doc.normalization_confidence = normalization_confidence
+        if overall_match_score is not None:
+            doc.overall_match_score = overall_match_score
+        if matched_fields is not None:
+            doc.matched_fields = matched_fields
+        if field_match_scores is not None:
+            doc.field_match_scores = field_match_scores
+
+        doc.updated_at = datetime.datetime.utcnow()
         self.db.commit()
         self.db.refresh(doc)
         return doc
 
     def update_document_verification(
-        self, doc_id: str, status: str, mismatch_fields: Optional[List] = None
+        self,
+        doc_id: str,
+        status: str,
+        mismatch_fields: Optional[List] = None,
+        matched_fields: Optional[List] = None,
+        overall_match_score: Optional[float] = None,
+        field_match_scores: Optional[Dict] = None,
     ) -> Optional[Document]:
         doc = self.db.query(Document).filter(Document.id == doc_id).first()
         if doc:
             doc.verification_status = status
             doc.mismatch_fields = mismatch_fields or []
+            if matched_fields is not None:
+                doc.matched_fields = matched_fields
+            if overall_match_score is not None:
+                doc.overall_match_score = overall_match_score
+            if field_match_scores is not None:
+                doc.field_match_scores = field_match_scores
+            doc.updated_at = datetime.datetime.utcnow()
             self.db.commit()
         return doc
 

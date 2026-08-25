@@ -9,12 +9,14 @@ GET  /api/v1/applications/{id}
 """
 import os
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from jose import jwt, JWTError
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.data_layer.repositories.application_repo import ApplicationRepository
 from app.data_layer.repositories.document_repo import DocumentRepository
 from app.data_layer.repositories.event_repo import EventRepository
@@ -24,16 +26,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/applications", tags=["applications-v2"])
 
 
+def _verify_app_access(request: Request, app_citizen_ref: str):
+    """Verify that citizen accessing this application is the owner (or admin/officer)."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            role = payload.get("role")
+            if role in ("ADMIN", "OFFICER", "admin", "officer"):
+                return
+            token_citizen_ref = payload.get("citizen_ref")
+            if token_citizen_ref and token_citizen_ref != app_citizen_ref:
+                raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this application.")
+        except HTTPException:
+            raise
+        except JWTError:
+            pass
+
+
 @router.get("/{application_id}")
-def get_application_by_id(application_id: str, db: Session = Depends(get_db)):
+def get_application_by_id(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Get application by UUID (for ApplicationReview page)."""
     repo = ApplicationRepository(db)
-    app = repo.get_by_id(application_id)
+    app = repo.get_by_id(application_id) or repo.get_by_number(application_id) or repo.get_by_tracking_id(application_id)
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
 
+    _verify_app_access(request, app.citizen_ref)
+
     event_repo = EventRepository(db)
-    events = event_repo.get_for_application(application_id)
+    events = event_repo.get_for_application(app.id)
 
     return {
         "id": app.id,
@@ -71,34 +94,71 @@ def get_application_by_id(application_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{application_id}/documents")
-def get_documents(application_id: str, db: Session = Depends(get_db)):
+def get_documents(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Get all documents for an application with OCR match scores."""
+    app_repo = ApplicationRepository(db)
+    app = app_repo.get_by_id(application_id) or app_repo.get_by_number(application_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    _verify_app_access(request, app.citizen_ref)
+
     doc_repo = DocumentRepository(db)
-    docs = doc_repo.get_by_application(application_id)
+    docs = doc_repo.get_by_application(app.id)
     return [
         {
             "id": d.id,
+            "doc_id": d.id,
+            "document_id": d.id,
             "doc_type": d.doc_type,
+            "document_type": d.doc_type,
             "upload_channel": d.upload_channel or "WEB",
             "verification_status": d.verification_status,
-            "confidence_score": d.confidence_score,
+            "confidence_score": d.confidence_score or 1.0,
+            "overall_match_score": d.overall_match_score,
             "extracted_fields": d.extracted_fields or {},
             "field_match_scores": d.field_match_scores or {},
-            "overall_match_score": d.overall_match_score,
             "mismatch_fields": d.mismatch_fields or [],
+            "matched_fields": getattr(d, "matched_fields", []) or [],
             "mismatch_resolutions": d.mismatch_resolutions or {},
+            "raw_ocr": {
+                "text": getattr(d, "raw_ocr_text", "") or "",
+                "fields": getattr(d, "raw_extracted_fields", {}) or {},
+            },
+            "raw_ocr_text": getattr(d, "raw_ocr_text", "") or "",
+            "raw_extracted_fields": getattr(d, "raw_extracted_fields", {}) or {},
+            "normalized_ocr": {
+                "fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
+                "confidence": getattr(d, "normalization_confidence", {}) or {},
+            },
+            "normalized_fields": getattr(d, "normalized_fields", {}) or d.extracted_fields or {},
+            "normalization_confidence": getattr(d, "normalization_confidence", {}) or {},
+            "normalization_status": getattr(d, "normalization_status", "DETERMINISTIC"),
+            "matching": {
+                "score": d.overall_match_score or 0.0,
+                "status": d.verification_status,
+                "matched_fields": getattr(d, "matched_fields", []) or [],
+                "mismatched_fields": d.mismatch_fields or [],
+            },
             "filename": os.path.basename(d.file_ref) if d.file_ref else "",
-            "created_at": d.created_at.isoformat(),
+            "file_ref": f"/data/uploads/{os.path.basename(d.file_ref)}" if d.file_ref and not d.file_ref.startswith("mock") else d.file_ref,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
         }
         for d in docs
     ]
 
 
 @router.get("/{application_id}/fields")
-def get_application_fields(application_id: str, db: Session = Depends(get_db)):
+def get_application_fields(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Get all fields with provenance metadata."""
     repo = ApplicationRepository(db)
-    fields_with_provenance = repo.get_fields_with_provenance(application_id)
+    app = repo.get_by_id(application_id) or repo.get_by_number(application_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    _verify_app_access(request, app.citizen_ref)
+
+    fields_with_provenance = repo.get_fields_with_provenance(app.id)
     # Convert to dict keyed by field_name
     return {
         f["field_name"]: {

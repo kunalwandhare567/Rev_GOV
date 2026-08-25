@@ -47,8 +47,12 @@ def get_service(service_id: str):
     }
 
 
+from fastapi import Request
+from jose import jwt, JWTError
+from app.core.config import settings
 from app.api.routes.auth import get_current_citizen
 from app.core.security import verify_application_ownership
+
 
 @router.get("/my-applications")
 def get_my_applications(
@@ -65,6 +69,55 @@ def get_my_applications(
     return {
         "status": "ok",
         "citizen_id": current_citizen.citizen_ref,
+        "count": len(apps),
+        "applications": [
+            {
+                "id": a.id,
+                "application_number": a.application_number,
+                "tracking_id": a.tracking_id,
+                "service_id": a.service_id,
+                "service_name": a.service.name_en if a.service else a.service_id,
+                "status": a.status,
+                "progress_percent": a.progress_percent,
+                "payment_status": a.payment_status,
+                "channel_origin": a.channel_origin,
+                "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in apps
+        ]
+    }
+
+
+@router.get("/citizen/{citizen_ref}")
+def get_applications_by_citizen_ref(
+    citizen_ref: str,
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """
+    Backward-compatible citizen application lookup route.
+    If authenticated with JWT, validates ownership.
+    Returns canonical list of applications for the citizen.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.replace("Bearer ", "").strip()
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            token_ref = payload.get("citizen_ref")
+            role = payload.get("role")
+            if token_ref and token_ref != citizen_ref and role not in ("ADMIN", "OFFICER"):
+                raise HTTPException(status_code=403, detail="Access forbidden: citizen ID mismatch")
+        except JWTError:
+            pass
+
+    repo = ApplicationRepository(db)
+    apps = repo.get_by_citizen(citizen_ref, limit=limit)
+    return {
+        "status": "ok",
+        "citizen_id": citizen_ref,
         "count": len(apps),
         "applications": [
             {

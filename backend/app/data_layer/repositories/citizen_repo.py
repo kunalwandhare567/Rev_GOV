@@ -52,6 +52,8 @@ class CitizenRepository:
     def get_by_ref(self, citizen_ref: str) -> Citizen | None:
         return self.db.query(Citizen).filter(Citizen.citizen_ref == citizen_ref).first()
 
+    get = get_by_ref
+
     def get_by_identifier(self, identifier: str) -> Citizen | None:
         """Look up citizen by normalized identifier hash via ChannelIdentity or direct email/phone."""
         if not identifier:
