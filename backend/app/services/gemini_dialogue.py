@@ -369,48 +369,48 @@ class GeminiDialogueService:
         """
         templates = {
             "en": {
-                "header": f"📋 Document Verification Result — Overall Match: {overall_score:.1f}%\n",
-                "match_label": "✅ Matched Fields:",
-                "mismatch_label": "⚠️ Mismatched Fields:",
-                "missing_label": "❓ Not Found in Document:",
+                "header": f"Document Verification Result — Overall Match: {overall_score:.1f}%\n",
+                "match_label": "Matched Fields:",
+                "mismatch_label": "Mismatched Fields:",
+                "missing_label": "Not Found in Document:",
                 "app_val": "You entered",
                 "doc_val": "Document says",
                 "score": "Match",
                 "footer": (
                     "\nHow would you like to resolve the mismatches?\n"
-                    "1️⃣ Use document value\n"
-                    "2️⃣ Keep my entered value\n"
-                    "3️⃣ Enter a new value manually"
+                    "1. Use document value\n"
+                    "2. Keep my entered value\n"
+                    "3. Enter a new value manually"
                 ),
             },
             "hi": {
-                "header": f"📋 दस्तावेज़ सत्यापन परिणाम — कुल मिलान: {overall_score:.1f}%\n",
-                "match_label": "✅ मिलान हुए:",
-                "mismatch_label": "⚠️ अंतर मिला:",
-                "missing_label": "❓ दस्तावेज़ में नहीं मिला:",
+                "header": f"दस्तावेज़ सत्यापन परिणाम — कुल मिलान: {overall_score:.1f}%\n",
+                "match_label": "मिलान हुए:",
+                "mismatch_label": "अंतर मिला:",
+                "missing_label": "दस्तावेज़ में नहीं मिला:",
                 "app_val": "आपने दर्ज किया",
                 "doc_val": "दस्तावेज़ में है",
                 "score": "मिलान",
                 "footer": (
                     "\nआप क्या करना चाहते हैं?\n"
-                    "1️⃣ दस्तावेज़ का मान उपयोग करें\n"
-                    "2️⃣ अपना दर्ज मान रखें\n"
-                    "3️⃣ नया मान स्वयं दर्ज करें"
+                    "1. दस्तावेज़ का मान उपयोग करें\n"
+                    "2. अपना दर्ज मान रखें\n"
+                    "3. नया मान स्वयं दर्ज करें"
                 ),
             },
             "mr": {
-                "header": f"📋 कागदपत्र पडताळणी निकाल — एकूण जुळणी: {overall_score:.1f}%\n",
-                "match_label": "✅ जुळलेले:",
-                "mismatch_label": "⚠️ फरक आढळला:",
-                "missing_label": "❓ कागदपत्रात सापडले नाही:",
+                "header": f"कागदपत्र पडताळणी निकाल — एकूण जुळणी: {overall_score:.1f}%\n",
+                "match_label": "जुळलेले:",
+                "mismatch_label": "फरक आढळला:",
+                "missing_label": "कागदपत्रात सापडले नाही:",
                 "app_val": "तुम्ही दिलेले",
                 "doc_val": "कागदपत्रात",
                 "score": "जुळणी",
                 "footer": (
                     "\nतुम्हाला काय करायचे आहे?\n"
-                    "1️⃣ कागदपत्राचे मूल्य वापरा\n"
-                    "2️⃣ माझे दिलेले मूल्य ठेवा\n"
-                    "3️⃣ नवीन मूल्य स्वतः टाका"
+                    "1. कागदपत्राचे मूल्य वापरा\n"
+                    "2. माझे दिलेले मूल्य ठेवा\n"
+                    "3. नवीन मूल्य स्वतः टाका"
                 ),
             },
         }

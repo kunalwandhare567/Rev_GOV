@@ -32,11 +32,12 @@ export const conversationApi = {
   getSession: (citizenIdentifier) =>
     client.get(`/conversation/session/${citizenIdentifier}`),
 
-  resolveMismatch: (citizenIdentifier, fieldName, resolution) =>
+  resolveMismatch: (citizenIdentifier, fieldName, resolution, newValue = null) =>
     client.post('/conversation/resolve-mismatch', {
       citizen_identifier: citizenIdentifier,
       field_name: fieldName,
       resolution,
+      new_value: newValue,
     }),
 
   sendVoiceMessage: (citizenIdentifier, channel, language, transcript, file) => {

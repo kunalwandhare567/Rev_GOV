@@ -42,7 +42,8 @@ class ChannelSwitchRequest(BaseModel):
 class ResolveMismatchRequest(BaseModel):
     citizen_identifier: str
     field_name: str
-    resolution: str  # "use_document" or "use_declared"
+    resolution: str  # "use_document", "use_declared", or "manual_entry"
+    new_value: Optional[str] = None
 
 
 class AdminDocDecisionRequest(BaseModel):
@@ -371,21 +372,25 @@ def resolve_mismatch(req: ResolveMismatchRequest, db: Session = Depends(get_db))
             mismatch_list = [f for f in doc.mismatch_fields if f != req.field_name]
             doc.mismatch_fields = mismatch_list
 
+            val = None
             if req.resolution == "use_document":
-                val = doc.extracted_fields.get(req.field_name)
-                if val is not None:
-                    # Update session slot
-                    session.filled_slots = {**session.filled_slots, req.field_name: val}
-                    session.missing_slots = [s for s in session.missing_slots if s != req.field_name]
+                val = doc.extracted_fields.get(req.field_name) if doc.extracted_fields else None
+            elif req.resolution in ("manual_entry", "use_manual", "custom") and req.new_value:
+                val = req.new_value.strip()
 
-                    # Save field in DB
-                    spec = ServiceSpecLoader.get(app.service_id)
-                    classification = "NON_SENSITIVE"
-                    if spec:
-                        slot_spec = next((s for s in spec.slots if s.name == req.field_name), None)
-                        if slot_spec:
-                            classification = slot_spec.classification
-                    app_repo.save_field(app.id, req.field_name, val, classification)
+            if val is not None:
+                # Update session slot
+                session.filled_slots = {**session.filled_slots, req.field_name: val}
+                session.missing_slots = [s for s in session.missing_slots if s != req.field_name]
+
+                # Save field in DB
+                spec = ServiceSpecLoader.get(app.service_id)
+                classification = "NON_SENSITIVE"
+                if spec:
+                    slot_spec = next((s for s in spec.slots if s.name == req.field_name), None)
+                    if slot_spec:
+                        classification = slot_spec.classification
+                app_repo.save_field(app.id, req.field_name, val, classification)
 
             if not mismatch_list:
                 doc.verification_status = "VERIFIED"

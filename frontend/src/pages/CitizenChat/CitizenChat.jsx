@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
-import { Send, Mic, RefreshCw, Globe, Plus, Paperclip, CheckCircle, XCircle, AlertCircle, FileText, Phone, PhoneOff, Play, Volume2, ShieldCheck, Search } from 'lucide-react'
+import { Send, Mic, RefreshCw, Globe, Plus, Paperclip, CheckCircle, XCircle, AlertCircle, FileText, Phone, PhoneOff, Play, Volume2, ShieldCheck, Search, Edit, Upload, Check, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import useChatStore from '../../store/chatStore'
 import useUIStore from '../../store/uiStore'
@@ -9,6 +9,7 @@ import useAuthStore from '../../store/authStore'
 import client from '../../api/client'
 import { conversationApi } from '../../api/conversation'
 import { applicationsApi } from '../../api/applications'
+import { documentsApi } from '../../api/documents'
 import { t, LANGUAGE_NAMES } from '../../i18n'
 import { CONV_NODES, NODE_STEPS, FRAUD_THRESHOLDS, SUPPORTED_LANGS, APP_STATUS } from '../../utils/constants'
 import styles from './CitizenChat.module.css'
@@ -142,15 +143,17 @@ function AssistantRightPanel({
                 transition: 'all 0.18s ease'
               }}>
                 <div style={{
-                  width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justify: 'center',
-                  fontSize: '10px', fontWeight: 700,
+                  width: 24, height: 24, minWidth: 24, minHeight: 24, borderRadius: '50%', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '11px', fontWeight: 700, lineHeight: 1, textAlign: 'center',
+                  boxSizing: 'border-box', padding: 0, margin: 0,
                   background: done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-surface-white)',
-                  borderColor: done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-outline-variant)',
-                  borderStyle: 'solid', borderWidth: 2,
-                  color: done || active ? '#ffffff' : 'var(--rg-outline)'
+                  border: `2px solid ${done ? 'var(--rg-secondary)' : active ? 'var(--rg-primary)' : 'var(--rg-outline-variant)'}`,
+                  color: done || active ? '#ffffff' : 'var(--rg-primary, #00355f)'
                 }}>
-                  {done ? '✓' : idx + 1}
+                  <span style={{ display: 'block', lineHeight: 1 }}>
+                    {done ? '✓' : idx + 1}
+                  </span>
                 </div>
                 <span style={{
                   fontSize: '0.8125rem',
@@ -316,6 +319,8 @@ export default function CitizenChat() {
   // Search Tracker States
   const [searchAppNum, setSearchAppNum] = useState('')
   const [trackedApp, setTrackedApp] = useState(null)
+  const [manualInputState, setManualInputState] = useState(null)
+  const [editingOcrState, setEditingOcrState] = useState(null)
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -724,13 +729,28 @@ export default function CitizenChat() {
   }
 
   // Resolve Mismatch Choice Trigger
-  const handleResolveMismatch = async (fieldName, resolution) => {
+  const handleResolveMismatch = async (fieldName, resolution, newValue = null) => {
     const loadingToast = toast.loading(`Resolving mismatch...`)
     try {
-      await store.resolveMismatch(fieldName, resolution)
+      await store.resolveMismatch(fieldName, resolution, newValue)
       toast.success(`Updated field successfully!`, { id: loadingToast })
+      setManualInputState(null)
     } catch (err) {
       toast.error(err.message || 'Failed to update field', { id: loadingToast })
+    }
+  }
+
+  // Save OCR Field Edit
+  const handleSaveOcrEdit = async (docId, fieldName, newValue) => {
+    const appId = store.applicationNumber || 'active'
+    const toastId = toast.loading(`Updating OCR field ${fieldName}...`)
+    try {
+      await documentsApi.updateOcrField(appId, docId, fieldName, newValue)
+      toast.success(`OCR field '${fieldName}' updated!`, { id: toastId })
+      setEditingOcrState(null)
+      await store.refreshSession()
+    } catch (err) {
+      toast.error(err.message || 'Failed to update OCR field', { id: toastId })
     }
   }
 
@@ -1089,12 +1109,53 @@ export default function CitizenChat() {
                           {Object.keys(normFields).length > 0 && (
                             <div className={styles.ocrSection}>
                               <div className={styles.ocrSectionTitle}>NORMALIZED OCR</div>
-                              {Object.entries(normFields).map(([k, v]) => (
-                                <div key={k} className={styles.ocrFieldRow}>
-                                  <span className={styles.ocrFieldName}>{k.replace(/_/g, ' ')}:</span>
-                                  <span className={styles.ocrFieldVal} style={{ color: 'var(--rg-success, #198754)' }}>{String(v)}</span>
-                                </div>
-                              ))}
+                              {Object.entries(normFields).map(([k, v]) => {
+                                const isEditing = editingOcrState?.docId === doc.id && editingOcrState?.field === k
+                                return (
+                                  <div key={k} className={styles.ocrFieldRow} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', margin: '0.25rem 0' }}>
+                                    <span className={styles.ocrFieldName} style={{ fontWeight: 600 }}>{k.replace(/_/g, ' ')}:</span>
+                                    {isEditing ? (
+                                      <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center', flex: 1 }}>
+                                        <input
+                                          type="text"
+                                          value={editingOcrState.val}
+                                          onChange={(e) => setEditingOcrState({ ...editingOcrState, val: e.target.value })}
+                                          style={{
+                                            flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderRadius: 6,
+                                            border: '1px solid var(--rg-primary)', background: 'var(--rg-surface-white)', color: 'var(--rg-text-heading)'
+                                          }}
+                                          autoFocus
+                                        />
+                                        <button
+                                          onClick={() => handleSaveOcrEdit(doc.id, k, editingOcrState.val)}
+                                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 700 }}
+                                          title="Save OCR edit"
+                                        >
+                                          ✓
+                                        </button>
+                                        <button
+                                          onClick={() => setEditingOcrState(null)}
+                                          style={{ padding: '0.25rem 0.375rem', fontSize: '0.75rem', background: 'transparent', color: 'var(--rg-text-body)', border: '1px solid var(--rg-outline-variant)', borderRadius: 4, cursor: 'pointer' }}
+                                          title="Cancel"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                                        <span className={styles.ocrFieldVal} style={{ color: 'var(--rg-success, #198754)', fontWeight: 600 }}>{String(v)}</span>
+                                        <button
+                                          onClick={() => setEditingOcrState({ docId: doc.id, field: k, val: String(v) })}
+                                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', opacity: 0.75, padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}
+                                          title="Edit OCR Field"
+                                        >
+                                          <Edit size={12} />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
                             </div>
                           )}
                         </div>
@@ -1125,7 +1186,43 @@ export default function CitizenChat() {
                                 <button className={styles.useDeclBtn} onClick={() => handleResolveMismatch(field, 'use_declared')}>
                                   Keep Declared
                                 </button>
+                                <button
+                                  className={styles.manualBtn}
+                                  onClick={() => setManualInputState({ field, val: '' })}
+                                  style={{ background: 'var(--rg-primary, #00355f)', color: '#fff', padding: '0.375rem 0.75rem', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600, border: 'none', cursor: 'pointer' }}
+                                >
+                                  ✏️ Manual Entry
+                                </button>
                               </div>
+                              {manualInputState?.field === field && (
+                                <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+                                  <input
+                                    type="text"
+                                    placeholder={`Enter correct ${field.replace(/_/g, ' ')}...`}
+                                    value={manualInputState.val}
+                                    onChange={(e) => setManualInputState({ field, val: e.target.value })}
+                                    style={{ flex: 1, padding: '0.375rem 0.5rem', fontSize: '0.75rem', borderRadius: 6, border: '1px solid var(--rg-outline-variant)', background: 'var(--rg-surface-white)', color: 'var(--rg-text-heading)' }}
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      if (manualInputState.val.trim()) {
+                                        handleResolveMismatch(field, 'manual_entry', manualInputState.val.trim())
+                                      } else {
+                                        toast.error('Please enter a value')
+                                      }
+                                    }}
+                                    style={{ padding: '0.375rem 0.75rem', fontSize: '0.75rem', fontWeight: 700, borderRadius: 6, background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer' }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => setManualInputState(null)}
+                                    style={{ padding: '0.375rem 0.5rem', fontSize: '0.75rem', borderRadius: 6, background: 'transparent', border: '1px solid var(--rg-outline-variant)', color: 'var(--rg-text-body)', cursor: 'pointer' }}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )
                         })}
@@ -1194,8 +1291,8 @@ export default function CitizenChat() {
                           <div className={styles.receiptUploadBox}>
                             <h5>Verify Payment via Receipt OCR</h5>
                             <p>Upload a screenshot of your transaction confirmation to auto-complete submission.</p>
-                            <button type="button" className={styles.uploadReceiptBtn} onClick={() => handleFileAttach('PAYMENT_RECEIPT')}>
-                              📤 Upload Screenshot
+                            <button type="button" className={styles.uploadReceiptBtn} onClick={() => handleFileAttach('PAYMENT_RECEIPT')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <Upload size={14} /> Upload Screenshot
                             </button>
                           </div>
                         </>
@@ -1285,7 +1382,7 @@ export default function CitizenChat() {
           <div className={styles.ivrPhone}>
             <div className={styles.phoneHeader}>
               <div className={styles.phoneSpeaker}/>
-              <div className={styles.phoneSignal}>📶 🔋 100%</div>
+              <div className={styles.phoneSignal}>100%</div>
             </div>
             
             <div className={styles.phoneCallArea}>
@@ -1294,7 +1391,7 @@ export default function CitizenChat() {
               <div className={styles.phoneTimer}>
                 {Math.floor(ivrDuration / 60)}:{(ivrDuration % 60).toString().padStart(2, '0')}
               </div>
-              <div className={styles.callPulsingIcon}>📞</div>
+              <div className={styles.callPulsingIcon}><Phone size={20}/></div>
             </div>
             
             {/* Real-time caption log */}
@@ -1352,7 +1449,7 @@ export default function CitizenChat() {
 
             <div className={styles.phoneControls}>
               <button className={`${styles.phoneMic} ${isListening ? styles.active : ''}`} onClick={toggleListening} title="Voice microphone">
-                🎤
+                <Mic size={20}/>
               </button>
               <button className={styles.endCallBtn} onClick={() => setIvrActive(false)} title="End Call">
                 <PhoneOff size={18}/> End Call

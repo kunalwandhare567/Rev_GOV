@@ -4,7 +4,13 @@ export const applicationsApi = {
   listServices: ()           => client.get('/applications/services'),
   getService:   (id)         => client.get(`/applications/services/${id}`),
   getStatus:    (appNum)     => client.get(`/applications/status/${appNum}`),
-  getMyApplications: ()      => client.get('/applications/my-applications'),
+  getMyApplications: (citizenIdentifier = null) => {
+    const id = citizenIdentifier || localStorage.getItem('citizen_identifier')
+    if (id) {
+      return client.get(`/applications/citizen/${id}`).catch(() => client.get('/applications/my-applications'))
+    }
+    return client.get('/applications/my-applications')
+  },
   getCitizenApps: (id)       => client.get(`/applications/citizen/${id}`),
   getRecent:    (limit = 20) => client.get(`/applications/recent?limit=${limit}`),
   getById:      (id)         => client.get(`/applications/${id}`),

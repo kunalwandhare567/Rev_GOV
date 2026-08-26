@@ -322,6 +322,44 @@ def resolve_mismatch(
     }
 
 
+class UpdateOcrFieldRequest(BaseModel):
+    field_name: str
+    new_value: str
+
+
+@router.post("/applications/{application_id}/documents/{doc_id}/update-ocr-field")
+@router.post("/documents/{application_id}/documents/{doc_id}/update-ocr-field")
+@router.post("/{application_id}/documents/{doc_id}/update-ocr-field")
+def update_ocr_field(
+    application_id: str,
+    doc_id: str,
+    body: UpdateOcrFieldRequest,
+    db: Session = Depends(get_db),
+):
+    """Update a specific OCR field value for a document."""
+    doc_repo = DocumentRepository(db)
+    app_repo = ApplicationRepository(db)
+    doc = doc_repo.update_ocr_field(doc_id, body.field_name, body.new_value)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    target_app_id = doc.application_id
+    app = app_repo.get_by_id(target_app_id) or app_repo.get_by_number(target_app_id)
+    if app:
+        app_repo.save_field(app.id, body.field_name, body.new_value, source="OCR_EDIT", confirmed=True)
+
+        from app.data_layer.repositories.session_repo import SessionRepository
+        session_repo = SessionRepository(db)
+        session = session_repo.get_or_recover_session(app.citizen_ref, application_id=app.id)
+        if session:
+            session.filled_slots = {**(session.filled_slots or {}), body.field_name: body.new_value}
+            session.missing_slots = [s for s in (session.missing_slots or []) if s != body.field_name]
+            session_repo.save_session(session)
+            db.commit()
+
+    return {"success": True, "doc_id": doc_id, "field_name": body.field_name, "new_value": body.new_value}
+
+
 @router.post("/{application_id}/submit")
 def submit_for_verification(application_id: str, request: Request, db: Session = Depends(get_db)):
     """Submit application for government verification."""

@@ -17,6 +17,182 @@ const SERVICE_ICONS = {
 
 const HOW_STEPS = ['step1', 'step2', 'step3', 'step4', 'step5']
 
+const TRANSFORMATION_ITEMS = [
+  { id: 1, before: 'Complex & Confusing Forms', after: 'Simplified Conversational Experience' },
+  { id: 2, before: 'Unclear Document Requirements', after: 'Smart Document Guidance' },
+  { id: 3, before: 'Language & Digital Barriers', after: 'Multilingual & Accessible' },
+  { id: 4, before: 'Manual Verification & Delays', after: 'AI-Powered Document Processing' },
+  { id: 5, before: 'Incomplete / Inconsistent Applications', after: 'Real-time Validation & Error Prevention' },
+  { id: 6, before: 'Poor Tracking & Visibility', after: 'Real-time Tracking & Transparency' },
+  { id: 7, before: 'Fragmented Communication', after: 'Unified Omnichannel Communication' },
+  { id: 8, before: 'Data Privacy & Security Concerns', after: 'Secure by Design' },
+  { id: 9, before: 'High Manual Workload', after: 'Reduced Manual Effort' },
+]
+
+function TransformationFlow() {
+  const [activeItem, setActiveItem] = useState(null)
+
+  return (
+    <section className={styles.transSection}>
+      <div className={styles.sectionInner}>
+        <div className={styles.transHeader}>
+          <div className={styles.transHeaderCol + ' ' + styles.beforeHeader}>
+            <h2 className={styles.transTitleRed}>BEFORE</h2>
+            <p className={styles.transSubRed}>(TODAY: THE CHALLENGES)</p>
+          </div>
+          <div className={styles.transHeaderCol + ' ' + styles.afterHeader}>
+            <h2 className={styles.transTitleGreen}>AFTER</h2>
+            <p className={styles.transSubGreen}>(TOMORROW: WHAT REVGOV SOLVES)</p>
+          </div>
+        </div>
+
+        <div className={styles.transDiagram}>
+          {/* Left Column (Red) */}
+          <div className={styles.transCol + ' ' + styles.beforeCol}>
+            {TRANSFORMATION_ITEMS.map((item, idx) => {
+              const isHovered = activeItem === item.id
+              return (
+                <div
+                  key={item.id}
+                  className={`${styles.transCard} ${styles.beforeCard} ${isHovered ? styles.cardHoveredRed : ''}`}
+                  onMouseEnter={() => setActiveItem(item.id)}
+                  onMouseLeave={() => setActiveItem(null)}
+                >
+                  <div className={styles.cardNum + ' ' + styles.numBefore}>{item.id}</div>
+                  <span className={styles.cardTextRed}>{item.before}</span>
+                  <div className={`${styles.nodeDot} ${styles.dotBefore} ${isHovered ? styles.dotActiveRed : ''}`} />
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Center SVG Diagram with Animated Flow Particles & Center Core */}
+          <div className={styles.svgContainer}>
+            <svg viewBox="0 0 240 480" className={styles.flowSvg} preserveAspectRatio="none">
+              <defs>
+                <filter id="glowRed" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="5" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <filter id="glowGreen" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="5" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <linearGradient id="redFlowLine" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#ef4444" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="#f87171" stopOpacity="1" />
+                </linearGradient>
+                <linearGradient id="greenFlowLine" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#4ade80" stopOpacity="1" />
+                  <stop offset="100%" stopColor="#16a34a" stopOpacity="0.4" />
+                </linearGradient>
+                <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="#f87171" />
+                </marker>
+                <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="#4ade80" />
+                </marker>
+              </defs>
+
+              {/* Render 9 left paths (Red: Left -> Center Core) */}
+              {TRANSFORMATION_ITEMS.map((item, i) => {
+                const startY = 26 + i * 51.5
+                const isHovered = activeItem === item.id
+                const pathD = `M 0,${startY} C 65,${startY} 75,240 120,240`
+                return (
+                  <g key={`left-${item.id}`}>
+                    {/* Base Guideline */}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke={isHovered ? '#f87171' : 'url(#redFlowLine)'}
+                      strokeWidth={isHovered ? 3.5 : 1.8}
+                      strokeOpacity={activeItem === null || isHovered ? 0.9 : 0.25}
+                      filter={isHovered ? 'url(#glowRed)' : undefined}
+                      markerEnd="url(#arrowRed)"
+                    />
+                    {/* Glowing Energy Flow Particles moving LEFT -> CENTER */}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke="#ffffff"
+                      strokeWidth={isHovered ? 4.5 : 2.5}
+                      strokeDasharray="5, 15"
+                      className={styles.pulsePathRed}
+                      strokeOpacity={activeItem === null || isHovered ? 1 : 0.3}
+                      filter="url(#glowRed)"
+                    />
+                  </g>
+                )
+              })}
+
+              {/* Render 9 right paths (Green: Center Core -> Right) */}
+              {TRANSFORMATION_ITEMS.map((item, i) => {
+                const endY = 26 + i * 51.5
+                const isHovered = activeItem === item.id
+                const pathD = `M 120,240 C 165,240 175,${endY} 240,${endY}`
+                return (
+                  <g key={`right-${item.id}`}>
+                    {/* Base Guideline */}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke={isHovered ? '#4ade80' : 'url(#greenFlowLine)'}
+                      strokeWidth={isHovered ? 3.5 : 1.8}
+                      strokeOpacity={activeItem === null || isHovered ? 0.9 : 0.25}
+                      filter={isHovered ? 'url(#glowGreen)' : undefined}
+                      markerEnd="url(#arrowGreen)"
+                    />
+                    {/* Glowing Energy Flow Particles moving CENTER -> RIGHT */}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke="#ffffff"
+                      strokeWidth={isHovered ? 4.5 : 2.5}
+                      strokeDasharray="5, 15"
+                      className={styles.pulsePathGreen}
+                      strokeOpacity={activeItem === null || isHovered ? 1 : 0.3}
+                      filter="url(#glowGreen)"
+                    />
+                  </g>
+                )
+              })}
+            </svg>
+
+            {/* Glowing Central AI Core Node */}
+            <div className={`${styles.centerCoreNode} ${activeItem !== null ? styles.coreActive : ''}`}>
+              <div className={styles.corePulseRing} />
+              <div className={styles.coreInner}>
+                <Zap size={16} className={styles.coreIcon} />
+                <span>RevGov Engine</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column (Green) */}
+          <div className={styles.transCol + ' ' + styles.afterCol}>
+            {TRANSFORMATION_ITEMS.map((item, idx) => {
+              const isHovered = activeItem === item.id
+              return (
+                <div
+                  key={item.id}
+                  className={`${styles.transCard} ${styles.afterCard} ${isHovered ? styles.cardHoveredGreen : ''}`}
+                  onMouseEnter={() => setActiveItem(item.id)}
+                  onMouseLeave={() => setActiveItem(null)}
+                >
+                  <div className={`${styles.nodeDot} ${styles.dotAfter} ${isHovered ? styles.dotActiveGreen : ''}`} />
+                  <div className={styles.cardNum + ' ' + styles.numAfter}>{item.id}</div>
+                  <span className={styles.cardTextGreen}>{item.after}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 export default function LandingPage() {
   const { language, setLanguage } = useChatStore()
   const [count, setCount] = useState({ apps: 0, langs: 0, sla: 0, privacy: 0 })
@@ -143,6 +319,9 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* ── BEFORE VS AFTER TRANSFORMATION DIAGRAM ── */}
+      <TransformationFlow />
+
       <section className={styles.dataGuardSection}>
         <div className={styles.sectionInner + ' ' + styles.splitRow}>
           <div className={styles.splitText}>
@@ -185,7 +364,7 @@ export default function LandingPage() {
           <div className={styles.statsGrid}>
             {[
               { label: 'Applications Processed', value: count.apps.toLocaleString() + '+', icon: '📋' },
-              { label: 'Languages Supported',    value: count.langs,  icon: <Globe size={24}/> },
+              { label: 'Languages Supported',    value: '7+',  icon: <Globe size={24}/> },
               { label: 'Avg SLA (Income)',       value: count.sla + ' days', icon: <Zap size={24}/> },
               { label: 'Data Privacy',           value: count.privacy + '%', icon: <Shield size={24}/> },
             ].map((stat, i) => (

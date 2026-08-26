@@ -144,17 +144,18 @@ def get_applications_by_citizen_ref(
 @router.get("/status/{application_number}")
 def get_application_status(
     application_number: str,
-    current_citizen = Depends(get_current_citizen),
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """Check status of a specific application by application number with ownership verification."""
+    """Check status of a specific application by application number or tracking ID."""
     repo = ApplicationRepository(db)
     app = repo.get_by_number(application_number) or repo.get_by_id(application_number)
     if not app:
-        raise HTTPException(status_code=404, detail="Application not found")
+        from app.models.db_models import Application
+        app = db.query(Application).filter(Application.tracking_id == application_number).first()
 
-    # Enforce backend authorization: citizen can only view their own application
-    verify_application_ownership(app.id, current_citizen.citizen_ref, db)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
 
     cert = None
     if app.certificate:

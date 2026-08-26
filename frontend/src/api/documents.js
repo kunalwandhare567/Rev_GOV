@@ -29,6 +29,13 @@ export const documentsApi = {
   submitForVerification: (appId) =>
     client.post(`/applications/${appId}/submit`),
 
+  /** Update a specific OCR field value for a document */
+  updateOcrField: (appId, docId, fieldName, newValue) =>
+    client.post(`/applications/${appId}/documents/${docId}/update-ocr-field`, {
+      field_name: fieldName,
+      new_value: newValue,
+    }),
+
   /** Get application readiness score (0–100) */
   getReadiness: (appNumber) =>
     client.get(`/applications/${appNumber}/readiness`),

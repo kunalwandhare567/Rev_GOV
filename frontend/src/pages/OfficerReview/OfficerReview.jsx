@@ -19,8 +19,10 @@ import {
   AlertOctagon,
   Scale,
   RefreshCw,
+  Edit,
 } from 'lucide-react'
 import { applicationsApi } from '../../api/applications'
+import { documentsApi } from '../../api/documents'
 import { STATUS_CONFIG } from '../../utils/constants'
 import styles from './OfficerReview.module.css'
 
@@ -39,6 +41,19 @@ export default function OfficerReview() {
   const [reasonText, setReasonText] = useState('')
   const [notesText, setNotesText] = useState('')
   const [expandedDocOcr, setExpandedDocOcr] = useState({})
+  const [editingOcrState, setEditingOcrState] = useState(null)
+
+  const handleSaveOcrEdit = async (docId, fieldName, newValue) => {
+    const toastId = toast.loading(`Updating OCR field ${fieldName}...`)
+    try {
+      await documentsApi.updateOcrField(appNumber, docId, fieldName, newValue)
+      toast.success(`OCR field '${fieldName}' updated!`, { id: toastId })
+      setEditingOcrState(null)
+      refetch()
+    } catch (err) {
+      toast.error(err.message || 'Failed to update OCR field', { id: toastId })
+    }
+  }
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin-app-detail', appNumber],
@@ -296,12 +311,53 @@ export default function OfficerReview() {
                   <h4 className={styles.subHeading}>Normalized OCR Fields:</h4>
                   {doc.normalized_fields && Object.keys(doc.normalized_fields).length > 0 ? (
                     <div className={styles.ocrFieldsGrid}>
-                      {Object.entries(doc.normalized_fields).map(([k, v]) => (
-                        <div key={k} className={styles.ocrFieldItem}>
-                          <span className={styles.ocrKey}>{k.replace(/_/g, ' ')}:</span>
-                          <span className={styles.ocrVal}>{String(v)}</span>
-                        </div>
-                      ))}
+                      {Object.entries(doc.normalized_fields).map(([k, v]) => {
+                        const isEditing = editingOcrState?.docId === doc.id && editingOcrState?.field === k
+                        return (
+                          <div key={k} className={styles.ocrFieldItem} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                            <span className={styles.ocrKey} style={{ fontWeight: 600 }}>{k.replace(/_/g, ' ')}:</span>
+                            {isEditing ? (
+                              <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', flex: 1 }}>
+                                <input
+                                  type="text"
+                                  value={editingOcrState.val}
+                                  onChange={(e) => setEditingOcrState({ ...editingOcrState, val: e.target.value })}
+                                  style={{
+                                    flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.8125rem', borderRadius: 4,
+                                    border: '1px solid #00355f', background: '#fff', color: '#172033'
+                                  }}
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={() => handleSaveOcrEdit(doc.id, k, editingOcrState.val)}
+                                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 700 }}
+                                  title="Save OCR edit"
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  onClick={() => setEditingOcrState(null)}
+                                  style={{ padding: '0.25rem 0.375rem', fontSize: '0.75rem', background: 'transparent', color: '#64748b', border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer' }}
+                                  title="Cancel"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                                <span className={styles.ocrVal}>{String(v)}</span>
+                                <button
+                                  onClick={() => setEditingOcrState({ docId: doc.id, field: k, val: String(v) })}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', opacity: 0.75, padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}
+                                  title="Edit OCR Field"
+                                >
+                                  <Edit size={12} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   ) : (
                     <span className={styles.dimText}>No structured fields parsed.</span>

@@ -5,6 +5,7 @@ import toast from 'react-hot-toast'
 import { applicationsApi } from '../../api/applications'
 import { documentsApi } from '../../api/documents'
 import useAuthStore from '../../store/authStore'
+import useChatStore from '../../store/chatStore'
 import { useRightPanel } from '../../layouts/RightPanelContext'
 import {
   getStatusUI, FILTER_GROUPS, TIMELINE_STAGES, getTimelineState, SERVICE_ICONS
@@ -231,6 +232,7 @@ export default function MyApplicationsPage() {
   const navigate     = useNavigate()
   const queryClient  = useQueryClient()
   const { citizenUser } = useAuthStore()
+  const citizenIdentifier = useChatStore(s => s.citizenIdentifier) || citizenUser?.citizen_ref || localStorage.getItem('citizen_identifier')
   const { setRightPanel, clearRightPanel } = useRightPanel()
 
   const [filter,       setFilter]       = useState('All Applications')
@@ -239,9 +241,9 @@ export default function MyApplicationsPage() {
   const [paying,       setPaying]       = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['myApplications'],
-    queryFn:  () => applicationsApi.getMyApplications(),
-    enabled:  !!citizenUser,
+    queryKey: ['myApplications', citizenIdentifier],
+    queryFn:  () => applicationsApi.getMyApplications(citizenIdentifier),
+    enabled:  true,
   })
 
   const applications = data?.applications || []

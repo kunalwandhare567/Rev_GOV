@@ -475,18 +475,18 @@ class ConversationOrchestrator:
             msg = self._multilang_msg(session.language, {
                 "en": (
                     "Please choose a service:\n"
-                    "1️⃣ Income Certificate\n"
-                    "2️⃣ Caste Certificate\n"
-                    "3️⃣ OBC Non-Creamy Layer Certificate\n"
-                    "4️⃣ Domicile Certificate\n\n"
+                    "1. Income Certificate\n"
+                    "2. Caste Certificate\n"
+                    "3. OBC Non-Creamy Layer Certificate\n"
+                    "4. Domicile Certificate\n\n"
                     "Type the number or service name."
                 ),
                 "hi": (
                     "कृपया सेवा चुनें:\n"
-                    "1️⃣ आय प्रमाण पत्र\n"
-                    "2️⃣ जाति प्रमाण पत्र\n"
-                    "3️⃣ OBC नॉन-क्रीमी लेयर प्रमाण पत्र\n"
-                    "4️⃣ अधिवास प्रमाण पत्र\n\n"
+                    "1. आय प्रमाण पत्र\n"
+                    "2. जाति प्रमाण पत्र\n"
+                    "3. OBC नॉन-क्रीमी लेयर प्रमाण पत्र\n"
+                    "4. अधिवास प्रमाण पत्र\n\n"
                     "नंबर या सेवा का नाम टाइप करें।"
                 ),
             })
@@ -773,7 +773,80 @@ class ConversationOrchestrator:
         uploaded_doc_types = [d.doc_type for d in (app.documents or []) if d.verification_status != "REJECTED"]
         missing_doc_types = [dt for dt in required_doc_types if dt not in uploaded_doc_types]
 
-        raw_text = (nlu_result.get("raw_text") or "").lower().strip()
+        raw_text_orig = (nlu_result.get("raw_text") or "").strip()
+        raw_text = raw_text_orig.lower()
+
+        # Handle pending mismatch resolution or mismatch selection (1 / 2 / 3)
+        mismatched_docs = [d for d in (app.documents or []) if d.verification_status == "MISMATCH" and d.mismatch_fields]
+        if mismatched_docs:
+            first_doc = mismatched_docs[0]
+            target_field = first_doc.mismatch_fields[0]
+
+            if session.pending_field:
+                field_name = session.pending_field
+                session.pending_field = None
+                session.filled_slots = {**(session.filled_slots or {}), field_name: raw_text_orig}
+                session.missing_slots = [s for s in (session.missing_slots or []) if s != field_name]
+                
+                spec_info = ServiceSpecLoader.get(app.service_id)
+                classification = "NON_SENSITIVE"
+                if spec_info:
+                    slot_spec = next((s for s in spec_info.slots if s.name == field_name), None)
+                    if slot_spec:
+                        classification = slot_spec.classification
+                self.app_repo.save_field(app.id, field_name, raw_text_orig, classification)
+
+                first_doc.mismatch_fields = [f for f in first_doc.mismatch_fields if f != field_name]
+                if not first_doc.mismatch_fields:
+                    first_doc.verification_status = "VERIFIED"
+                self.db.add(first_doc)
+                self.db.commit()
+
+                msg = self._multilang_msg(session.language, {
+                    "en": f"✅ Updated *{field_name.replace('_', ' ').title()}* to: *{raw_text_orig}*.",
+                    "hi": f"✅ *{field_name}* को अपडेट किया गया: *{raw_text_orig}*",
+                })
+                return msg, "DOCUMENT_CAPTURE", {}
+
+            if any(k in raw_text for k in ["3", "manual", "enter a new value", "manually", "new value"]):
+                session.pending_field = target_field
+                msg = self._multilang_msg(session.language, {
+                    "en": f"✏️ Please type the correct value manually for *{target_field.replace('_', ' ').title()}*:",
+                    "hi": f"✏️ कृपया *{target_field}* के लिए सही मान दर्ज करें:",
+                })
+                return msg, "DOCUMENT_CAPTURE", {}
+
+            elif any(k in raw_text for k in ["1", "use document", "document value"]):
+                doc_val = first_doc.extracted_fields.get(target_field) if first_doc.extracted_fields else None
+                if doc_val is not None:
+                    session.filled_slots = {**(session.filled_slots or {}), target_field: doc_val}
+                    session.missing_slots = [s for s in (session.missing_slots or []) if s != target_field]
+                    self.app_repo.save_field(app.id, target_field, doc_val, "NON_SENSITIVE")
+                
+                first_doc.mismatch_fields = [f for f in first_doc.mismatch_fields if f != target_field]
+                if not first_doc.mismatch_fields:
+                    first_doc.verification_status = "VERIFIED"
+                self.db.add(first_doc)
+                self.db.commit()
+
+                msg = self._multilang_msg(session.language, {
+                    "en": f"✅ Updated *{target_field.replace('_', ' ').title()}* using document value: *{doc_val}*.",
+                    "hi": f"✅ *{target_field}* दस्तावेज़ मान से अपडेट किया गया: *{doc_val}*",
+                })
+                return msg, "DOCUMENT_CAPTURE", {}
+
+            elif any(k in raw_text for k in ["2", "keep", "entered value", "declared"]):
+                first_doc.mismatch_fields = [f for f in first_doc.mismatch_fields if f != target_field]
+                if not first_doc.mismatch_fields:
+                    first_doc.verification_status = "VERIFIED"
+                self.db.add(first_doc)
+                self.db.commit()
+
+                msg = self._multilang_msg(session.language, {
+                    "en": f"✅ Kept your declared value for *{target_field.replace('_', ' ').title()}*.",
+                    "hi": f"✅ *{target_field}* के लिए आपका घोषित मान रखा गया।",
+                })
+                return msg, "DOCUMENT_CAPTURE", {}
 
         # Auto-advance if all docs uploaded or user explicitly asks to proceed
         advance_keywords = ["done", "skip", "next", "proceed", "continue", "what next", "finish", "review", "upload done", "now what"]

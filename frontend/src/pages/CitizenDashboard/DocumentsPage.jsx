@@ -5,6 +5,7 @@ import toast from 'react-hot-toast'
 import { applicationsApi } from '../../api/applications'
 import { documentsApi } from '../../api/documents'
 import useAuthStore from '../../store/authStore'
+import useChatStore from '../../store/chatStore'
 import { useRightPanel } from '../../layouts/RightPanelContext'
 import { getOCRCategory } from '../../utils/statusMap'
 import styles from './DocumentsPage.module.css'
@@ -74,6 +75,7 @@ export default function DocumentsPage() {
   const [searchParams] = useSearchParams()
   const queryClient   = useQueryClient()
   const { citizenUser } = useAuthStore()
+  const citizenIdentifier = useChatStore(s => s.citizenIdentifier) || citizenUser?.citizen_ref || localStorage.getItem('citizen_identifier')
   const { setRightPanel, clearRightPanel } = useRightPanel()
 
   const urlAppId  = searchParams.get('appId')
@@ -85,9 +87,9 @@ export default function DocumentsPage() {
 
   // Load my applications for the selector
   const { data: appsData } = useQuery({
-    queryKey: ['myApplications'],
-    queryFn:  () => applicationsApi.getMyApplications(),
-    enabled:  !!citizenUser,
+    queryKey: ['myApplications', citizenIdentifier],
+    queryFn:  () => applicationsApi.getMyApplications(citizenIdentifier),
+    enabled:  true,
   })
 
   const apps = appsData?.applications || []

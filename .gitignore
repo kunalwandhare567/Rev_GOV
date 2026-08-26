@@ -25,14 +25,19 @@ __pycache__/
 .coverage
 
 # Storage & uploads
-data/uploads/
-backend/data/uploads/
+data/
+backend/data/
 *.pdf
 *.jpg
 *.png
+
+# Excluded Internal Documentation
+PROJECT_STATUS_AND_PIPELINE_ANALYSIS.md
+PROJECT_ANALYSIS_AND_PIPELINE_DOCUMENTATION.md
 
 # IDE & OS files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+

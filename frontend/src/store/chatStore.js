@@ -100,20 +100,29 @@ const useChatStore = create((set, get) => ({
       isConnected: true,
     })
   },
-  resolveMismatch: async (fieldName, resolution) => {
+  resolveMismatch: async (fieldName, resolution, newValue = null) => {
     set({ isTyping: true })
     try {
-      const resp = await conversationApi.resolveMismatch(get().citizenIdentifier, fieldName, resolution)
+      const resp = await conversationApi.resolveMismatch(get().citizenIdentifier, fieldName, resolution, newValue)
       get().syncFromResponse(resp)
       get().addMessage({
         role: 'ASSISTANT',
-        content: resp.response || `Resolved mismatch for '${fieldName}' using ${resolution}.`,
+        content: resp.response || `Resolved mismatch for '${fieldName}' by choosing ${resolution.replace(/_/g, ' ')}.`,
         language: resp.language || get().language
       })
     } catch (err) {
       throw err
     } finally {
       set({ isTyping: false })
+    }
+  },
+  refreshSession: async () => {
+    if (!get().citizenIdentifier) return
+    try {
+      const data = await conversationApi.getSession(get().citizenIdentifier)
+      get().syncFromResponse(data)
+    } catch (e) {
+      console.warn('Failed to refresh session:', e)
     }
   },
   simulateGovApproval: async () => {

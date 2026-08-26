@@ -1,0 +1,4 @@
+# Revenue_Gov_Platform Root Requirements
+# Includes all backend dependencies for the Multilingual AI-Powered Citizen Revenue Services Platform
+
+-r backend/requirements.txt

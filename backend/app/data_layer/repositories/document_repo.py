@@ -163,3 +163,20 @@ class DocumentRepository:
             doc.updated_at = datetime.datetime.utcnow()
             self.db.commit()
         return doc
+
+    def update_ocr_field(self, doc_id: str, field_name: str, new_value: str) -> Document | None:
+        """Update a single extracted/normalized OCR field value for a document."""
+        doc = self.get(doc_id)
+        if doc:
+            norm = dict(doc.normalized_fields or {})
+            norm[field_name] = new_value
+            doc.normalized_fields = norm
+
+            ext = dict(doc.extracted_fields or {})
+            ext[field_name] = new_value
+            doc.extracted_fields = ext
+
+            doc.updated_at = datetime.datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(doc)
+        return doc

@@ -568,33 +568,127 @@
 
 /* IVR overlay */
 .ivrOverlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.85);
-  display: flex; align-items: center; justify-content: center; z-index: 200;
-  backdrop-filter: blur(4px);
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.75);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+  backdrop-filter: blur(8px); padding: 1rem;
+  animation: fadeIn 0.25s ease;
 }
-.ivrWindow {
-  background: var(--rg-surface-white); border-radius: 24px;
-  padding: 2rem; width: 420px; max-width: 90vw;
-  display: flex; flex-direction: column; gap: 1rem;
+
+.ivrPhone {
+  width: 380px; max-width: 95vw; max-height: 90vh;
+  background: #0f172a; border-radius: 32px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 0 2px rgba(255, 255, 255, 0.1);
+  display: flex; flex-direction: column; overflow: hidden;
+  color: #f8fafc; font-family: var(--font-sans);
+  animation: fadeInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
 }
-.ivrWindowHeader { display: flex; align-items: center; justify-content: space-between; }
-.ivrWindowHeader h3 { font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; color: var(--rg-text-heading); }
-.ivrDuration { font-size: 0.875rem; font-family: var(--font-mono); color: var(--rg-secondary); font-weight: 600; }
-.ivrTranscript { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; }
-.ivrLine { font-size: 0.875rem; padding: 0.5rem 0.75rem; border-radius: 8px; }
-.ivrLine.user      { background: rgba(0,53,95,0.08); text-align: right; }
-.ivrLine.assistant { background: var(--rg-surface-container-low); }
-.ivrButtons { display: grid; grid-template-columns: repeat(3,1fr); gap: 0.5rem; }
-.ivrKey {
-  padding: 0.875rem; background: var(--rg-surface-container-low);
-  border-radius: 12px; font-size: 1.25rem; font-weight: 700; text-align: center;
-  color: var(--rg-text-heading); transition: all 0.15s; border: 1px solid var(--rg-outline-variant);
+
+.phoneHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 24px 6px; font-size: 11px; color: #94a3b8;
 }
-.ivrKey:hover { background: var(--rg-surface-container); }
-.ivrHangup {
-  grid-column: 1/-1; padding: 0.875rem;
-  background: var(--rg-error); color: #fff; border-radius: 12px; font-weight: 700;
+
+.phoneSpeaker {
+  width: 50px; height: 4px; background: #334155;
+  border-radius: 999px; margin: 0 auto;
 }
+
+.phoneSignal { font-size: 11px; color: #64748b; }
+
+.phoneCallArea {
+  text-align: center; padding: 16px 20px 14px;
+  background: linear-gradient(180deg, #0f172a 0%, rgba(30, 41, 59, 0.5) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.phoneCallerName { font-size: 1.125rem; font-weight: 700; color: #ffffff; letter-spacing: -0.01em; }
+.phoneCallerNumber { font-size: 0.8125rem; color: #38bdf8; font-family: var(--font-mono); margin-top: 2px; }
+.phoneTimer { font-size: 0.875rem; font-weight: 600; color: #22c55e; font-family: var(--font-mono); margin-top: 6px; }
+
+.callPulsingIcon {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(34, 197, 94, 0.15); color: #22c55e;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; margin: 10px auto 0;
+  animation: pulseCall 2s infinite;
+}
+
+@keyframes pulseCall {
+  0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  70% { box-shadow: 0 0 0 14px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
+.phoneTranscriptBox {
+  flex: 1; min-height: 140px; max-height: 220px;
+  overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.ivrLogLine { font-size: 0.8125rem; padding: 8px 12px; border-radius: 12px; line-height: 1.4; }
+.ivrLogLine.ivrBot {
+  background: #1e293b; color: #e2e8f0; align-self: flex-start;
+  border-bottom-left-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.ivrLogLine.ivrUser {
+  background: #0284c7; color: #ffffff; align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.ivrActor {
+  font-weight: 700; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-right: 6px; opacity: 0.8; display: block; margin-bottom: 2px;
+}
+.ivrText { display: block; }
+.ivrTyping { font-size: 0.75rem; color: #94a3b8; font-style: italic; padding: 4px 8px; }
+
+.ivrQuickChoices {
+  padding: 10px 16px; background: #1e293b;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ivrQuickChoices > span {
+  font-size: 0.6875rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 8px; display: block;
+}
+
+.chipsWrapper {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  max-height: 100px; overflow-y: auto;
+}
+.chipsWrapper button {
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e2e8f0; border-radius: 20px; padding: 6px 12px;
+  font-size: 0.75rem; font-weight: 600; cursor: pointer;
+  transition: all 0.2s ease; font-family: inherit;
+}
+.chipsWrapper button:hover {
+  background: #0284c7; border-color: #38bdf8; color: #ffffff;
+}
+
+.phoneControls {
+  display: flex; align-items: center; justify-content: center;
+  gap: 16px; padding: 16px; background: #0f172a;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.phoneMic {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: #334155; border: none; color: #f8fafc;
+  font-size: 20px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; transition: all 0.2s ease;
+}
+.phoneMic:hover { background: #475569; }
+.phoneMic.active { background: #ef4444; animation: pulseMic 1.5s infinite; }
+
+.endCallBtn {
+  height: 48px; padding: 0 24px; border-radius: 24px;
+  background: #dc2626; border: none; color: #ffffff;
+  font-weight: 700; font-size: 0.875rem; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+  transition: all 0.2s ease; font-family: inherit;
+}
+.endCallBtn:hover { background: #b91c1c; transform: scale(1.02); }
 
 /* ─── Animations ─── */
 @keyframes fadeIn      { from { opacity: 0; }               to { opacity: 1; } }

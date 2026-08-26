@@ -57,8 +57,8 @@
 .body {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 1.25rem;
+  grid-template-columns: 340px 1fr;
+  gap: 1.5rem;
   min-height: 0;
 }
 
@@ -200,8 +200,8 @@
 
 /* OCR bars */
 .ocrBars { display: flex; flex-direction: column; gap: 0.625rem; }
-.ocrBarRow { display: grid; grid-template-columns: 140px 1fr 40px; align-items: center; gap: 0.625rem; }
-.ocrBarLabel { font-size: 0.8125rem; color: var(--rg-text-heading); text-transform: capitalize; }
+.ocrBarRow { display: grid; grid-template-columns: 180px 1fr 50px; align-items: center; gap: 0.75rem; }
+.ocrBarLabel { font-size: 0.8125rem; color: var(--rg-text-heading); text-transform: capitalize; font-weight: 500; }
 .ocrBarTrack { height: 8px; background: var(--rg-surface-container); border-radius: 9999px; overflow: hidden; }
 .ocrBarFill  { height: 100%; border-radius: 9999px; transition: width 0.4s ease; }
 .ocrBarScore { font-size: 0.8125rem; font-weight: 700; text-align: right; }
@@ -210,8 +210,8 @@
 .comparisonTable { display: flex; flex-direction: column; border: 1px solid var(--rg-outline-variant); border-radius: 12px; overflow: hidden; }
 .compTableHead, .compTableRow {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 64px;
-  gap: 0; padding: 0.625rem 0.875rem;
+  grid-template-columns: 1.5fr 2fr 2fr 75px;
+  gap: 0.5rem; padding: 0.75rem 1rem;
 }
 .compTableHead {
   background: var(--rg-surface-container-low);
@@ -303,7 +303,6 @@
 }
 
 /* Mobile */
-.hideMobile { display: none; }
 @media (max-width: 900px) {
   .body { grid-template-columns: 1fr; grid-template-rows: auto; }
   .mobileTabs { display: flex; }
