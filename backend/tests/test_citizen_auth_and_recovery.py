@@ -58,7 +58,7 @@ def test_1_registration(db: Session):
     payload = {
         "identifier": test_email,
         "password": "Password123!",
-        "name": "Citizen Alpha",
+        "name": "Citizen Alpha Kumar",
         "phone": test_phone,
         "address": "123 Civic Lane"
     }
@@ -75,7 +75,7 @@ def test_1_registration(db: Session):
     # Verify persistent DB record
     citizen = db.query(Citizen).filter(Citizen.citizen_ref == data["citizen_id"]).first()
     assert citizen is not None
-    assert citizen.name == "Citizen Alpha"
+    assert citizen.name == "Citizen Alpha Kumar"
 
 
 def test_2_login(db: Session):
@@ -87,7 +87,7 @@ def test_2_login(db: Session):
     client.post("/api/v1/auth/citizen/register", json={
         "identifier": "citizen_main@example.com",
         "password": "Password123!",
-        "name": "Citizen Main",
+        "name": "Citizen Main Kumar",
         "phone": "+919811223344"
     })
 
@@ -171,7 +171,7 @@ def test_4_citizen_isolation(db: Session):
     reg_b_res = client.post("/api/v1/auth/citizen/register", json={
         "identifier": email_b,
         "password": "Password123!",
-        "name": "Citizen Beta",
+        "name": "Citizen Beta Kumar",
         "phone": phone_b
     })
     assert reg_b_res.status_code == 200, reg_b_res.text

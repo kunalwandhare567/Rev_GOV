@@ -17,14 +17,34 @@ from main import _seed_database, settings
 def reset_database():
     print("🧹 Starting Database and Storage Reset...")
 
-    # 1. Remove SQLite database file
+    # 1. Clean database tables via SQLAlchemy and file deletion
     db_file = "revenue_services.db"
+    deleted_file = False
     if os.path.exists(db_file):
         try:
             os.remove(db_file)
             print(f"  ❌ Deleted database file: {db_file}")
+            deleted_file = True
         except Exception as e:
-            print(f"  ⚠️ Could not delete {db_file}: {e}")
+            print(f"  ⚠️ Could not directly delete {db_file} (likely open in server process): {e}")
+            print("  🔄 Dropping all existing tables via SQLAlchemy / SQLite directly...")
+
+    if not deleted_file:
+        try:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                conn.execute(text("PRAGMA foreign_keys = OFF;"))
+                # Fetch all table names and drop them
+                tables_result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"))
+                tables = [row[0] for row in tables_result]
+                for table in tables:
+                    conn.execute(text(f"DROP TABLE IF EXISTS `{table}`;"))
+                    print(f"  🗑️ Dropped table: {table}")
+                conn.execute(text("PRAGMA foreign_keys = ON;"))
+                conn.commit()
+            print("  ✅ All database tables dropped successfully!")
+        except Exception as e:
+            print(f"  ⚠️ Error while dropping tables: {e}")
 
     # 2. Clean uploaded data folders
     folders_to_clean = [
@@ -59,7 +79,7 @@ def reset_database():
     Base.metadata.create_all(bind=engine)
     print("  ✅ Database schema created!")
 
-    # 4. Seed baseline data (Admin user, Officer user, Service Catalogue)
+    # 4. Seed baseline data (Admin user, Service Catalogue)
     print("🌱 Seeding baseline data...")
     _seed_database()
     print("  ✅ Baseline seed data created!")
@@ -69,3 +89,4 @@ def reset_database():
 
 if __name__ == "__main__":
     reset_database()
+

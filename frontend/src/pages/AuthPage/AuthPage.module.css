@@ -140,6 +140,14 @@
   border-color: var(--rg-primary);
   box-shadow: 0 0 0 3px rgba(0,53,95,0.08);
 }
+.inputError {
+  border-color: #dc2626 !important;
+  background-color: #fffafb !important;
+}
+.inputError:focus {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15) !important;
+}
 .input::placeholder { color: var(--rg-text-body); }
 
 /* Submit button */

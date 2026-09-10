@@ -9,7 +9,6 @@ export default function CitizenAuthModal({ isOpen, onClose, onSuccess }) {
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
-  const [address, setAddress] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -35,10 +34,9 @@ export default function CitizenAuthModal({ isOpen, onClose, onSuccess }) {
         })
       } else {
         const res = await registerCitizen({
-          identifier,
+          identifier: identifier.trim(),
           password,
-          name: name || undefined,
-          address: address || undefined,
+          name: name.trim() || undefined,
         })
         setCitizenAuth(res.access_token, {
           citizen_id: res.citizen_id,
@@ -106,10 +104,11 @@ export default function CitizenAuthModal({ isOpen, onClose, onSuccess }) {
                 <label className={styles.label}>Full Name</label>
                 <input
                   type="text"
-                  className={styles.input}
+                  className={`${styles.input} ${error && /name/i.test(error) ? styles.inputError : ''}`}
                   placeholder="Enter your full name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => { setName(e.target.value); if (error) setError(''); }}
+                  required
                 />
               </div>
             )}
@@ -118,10 +117,10 @@ export default function CitizenAuthModal({ isOpen, onClose, onSuccess }) {
               <label className={styles.label}>Email or Phone Number</label>
               <input
                 type="text"
-                className={styles.input}
-                placeholder="citizen@example.com or +919999999999"
+                className={`${styles.input} ${error && /(mobile|phone|email)/i.test(error) ? styles.inputError : ''}`}
+                placeholder="citizen@example.com or +91XXXXXXXXXX"
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                onChange={(e) => { setIdentifier(e.target.value); if (error) setError(''); }}
                 required
               />
             </div>
@@ -130,26 +129,13 @@ export default function CitizenAuthModal({ isOpen, onClose, onSuccess }) {
               <label className={styles.label}>Password</label>
               <input
                 type="password"
-                className={styles.input}
+                className={`${styles.input} ${error && /password/i.test(error) ? styles.inputError : ''}`}
                 placeholder="Enter password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => { setPassword(e.target.value); if (error) setError(''); }}
                 required
               />
             </div>
-
-            {activeTab === 'register' && (
-              <div className={styles.formGroup}>
-                <label className={styles.label}>Residential Address (Optional)</label>
-                <input
-                  type="text"
-                  className={styles.input}
-                  placeholder="Street, City, State"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                />
-              </div>
-            )}
 
             <button type="submit" className={styles.submitBtn} disabled={loading}>
               {loading

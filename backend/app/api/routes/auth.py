@@ -221,20 +221,58 @@ def register_citizen(
     Allocates a unique permanent citizen_id (CIT-001).
     Links ChannelIdentity for omnichannel recognition across Web, WhatsApp, IVR.
     """
+    import re
     from app.data_layer.repositories.citizen_repo import CitizenRepository
     from app.data_layer.repositories.channel_identity_repo import ChannelIdentityRepository
 
-    identifier = body.identifier.strip().lower()
-    if not identifier:
-        raise HTTPException(status_code=400, detail="Phone number or Email is required.")
+    # 1. Validate Full Name (First, Middle, Last Name required)
+    name_str = (body.name or "").strip()
+    name_parts = [p for p in name_str.split() if p]
+    if len(name_parts) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter your complete Full Name including First Name, Middle Name, and Last Name (e.g. Rajesh Kumar Sharma).",
+        )
 
-    # Determine phone/email fields
-    phone_val = body.phone or (identifier if "@" not in identifier else None)
-    email_val = body.email or (identifier if "@" in identifier else None)
+    # 2. Validate Password (at least 10 characters)
+    if not body.password or len(body.password) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 10 characters long.",
+        )
 
-    # Check if user/citizen already exists across User and Citizen tables
+    # 3. Validate Phone Number (10 digits) or Email
+    raw_identifier = body.identifier.strip()
+    if not raw_identifier:
+        raise HTTPException(status_code=400, detail="Mobile number (10 digits) or Email is required.")
+
+    if "@" in raw_identifier:
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", raw_identifier):
+            raise HTTPException(status_code=400, detail="Please enter a valid email address (e.g. citizen@example.com).")
+        email_val = raw_identifier.lower()
+        phone_val = None
+        identifier = email_val
+    else:
+        cleaned_phone = re.sub(r"\D", "", raw_identifier)
+        if cleaned_phone.startswith("91") and len(cleaned_phone) == 12:
+            cleaned_phone = cleaned_phone[2:]
+        elif cleaned_phone.startswith("0") and len(cleaned_phone) == 11:
+            cleaned_phone = cleaned_phone[1:]
+
+        if len(cleaned_phone) != 10:
+            raise HTTPException(
+                status_code=400,
+                detail="Mobile number must be exactly 10 digits (e.g. 9876543210).",
+            )
+
+        phone_val = f"+91{cleaned_phone}"
+        identifier = phone_val
+        email_val = None
+
+    # Check if user/citizen already exists
     existing = db.query(User).filter(
         (User.username == identifier) |
+        (User.username == raw_identifier) |
         (User.username == (phone_val or "")) |
         (User.username == (email_val or ""))
     ).first()
@@ -327,8 +365,22 @@ def login_citizen(
     """
     from app.data_layer.repositories.citizen_repo import CitizenRepository
 
+    import re
     identifier = body.identifier.strip().lower()
-    user = db.query(User).filter(User.username == identifier, User.is_active == True).first()
+    alt_identifier = None
+    cleaned = re.sub(r"\D", "", identifier)
+    if cleaned.startswith("91") and len(cleaned) == 12:
+        alt_identifier = cleaned[2:]
+    elif len(cleaned) == 10:
+        alt_identifier = f"+91{cleaned}"
+
+    if alt_identifier:
+        user = db.query(User).filter(
+            (User.username == identifier) | (User.username == alt_identifier),
+            User.is_active == True
+        ).first()
+    else:
+        user = db.query(User).filter(User.username == identifier, User.is_active == True).first()
 
     if not user or not _verify_password(body.password, user.hashed_password):
         raise HTTPException(
