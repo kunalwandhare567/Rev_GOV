@@ -55,6 +55,17 @@ export default function OfficerReview() {
     }
   }
 
+  const handleVerifyDoc = async (docId, status) => {
+    const toastId = toast.loading(`Updating document status to ${status}...`)
+    try {
+      await documentsApi.verifyDocument(appNumber, docId, status)
+      toast.success(`Document marked as ${status}!`, { id: toastId })
+      refetch()
+    } catch (err) {
+      toast.error(err.message || 'Failed to update document status', { id: toastId })
+    }
+  }
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin-app-detail', appNumber],
     queryFn: () => applicationsApi.getAdminDetail(appNumber),
@@ -300,9 +311,46 @@ export default function OfficerReview() {
                     <span className={styles.docConfidence}>
                       OCR Conf: {Math.round((doc.confidence_score || 0.9) * 100)}%
                     </span>
-                    <span className={styles.statusPill}>
-                      {doc.verification_status || 'VERIFIED'}
+                    <span className={styles.statusPill} style={{
+                      backgroundColor: doc.verification_status === 'VERIFIED' ? '#dcfce7' : doc.verification_status === 'REJECTED' ? '#fee2e2' : '#f1f5f9',
+                      color: doc.verification_status === 'VERIFIED' ? '#15803d' : doc.verification_status === 'REJECTED' ? '#b91c1c' : '#475569'
+                    }}>
+                      {doc.verification_status || 'PENDING'}
                     </span>
+                    <div style={{ display: 'inline-flex', gap: '0.375rem', alignItems: 'center', marginLeft: '0.5rem' }}>
+                      <button
+                        onClick={() => handleVerifyDoc(doc.id, 'VERIFIED')}
+                        style={{
+                          padding: '0.25rem 0.5rem',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          borderRadius: 4,
+                          border: 'none',
+                          cursor: 'pointer',
+                          background: doc.verification_status === 'VERIFIED' ? '#16a34a' : '#00355f',
+                          color: '#fff',
+                        }}
+                        title="Approve & Mark Document Verified"
+                      >
+                        ✓ Verify
+                      </button>
+                      <button
+                        onClick={() => handleVerifyDoc(doc.id, 'REJECTED')}
+                        style={{
+                          padding: '0.25rem 0.5rem',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          borderRadius: 4,
+                          border: '1px solid #cbd5e1',
+                          cursor: 'pointer',
+                          background: doc.verification_status === 'REJECTED' ? '#dc2626' : '#fff',
+                          color: doc.verification_status === 'REJECTED' ? '#fff' : '#64748b',
+                        }}
+                        title="Mark Document Rejected"
+                      >
+                        ✕ Reject
+                      </button>
+                    </div>
                   </div>
                 </div>
 

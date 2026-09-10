@@ -40,7 +40,12 @@ export const documentsApi = {
   getReadiness: (appNumber) =>
     client.get(`/applications/${appNumber}/readiness`),
 
+  /** Verify or reject a specific document (Admin action) */
+  verifyDocument: (appId, docId, status = 'VERIFIED') =>
+    client.post(`/applications/${appId}/documents/${docId}/verify`, { status }),
+
   /** Get document image URL for preview */
   getDocumentImageUrl: (appId, docId) =>
     `${client.defaults.baseURL}/applications/${appId}/documents/${docId}/image`,
 }
+

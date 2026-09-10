@@ -69,6 +69,17 @@ def initiate_payment(body: PaymentInitRequest, db: Session = Depends(get_db)):
             ),
         )
 
+    # ── Document Verification Guard: Payment ONLY after all documents verified by Admin ──
+    unverified_docs = [d for d in app.documents if d.verification_status != "VERIFIED"]
+    if unverified_docs:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Payment is locked until all uploaded documents are verified by an admin. "
+                f"Pending document verifications: {len(unverified_docs)} document(s)."
+            ),
+        )
+
     if app.payment_status in ("PAID", "SUCCESS"):
         raise HTTPException(status_code=400, detail="Payment already completed")
 

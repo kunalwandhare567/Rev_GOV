@@ -393,3 +393,32 @@ def submit_for_verification(application_id: str, request: Request, db: Session =
         "tracking_id": app.tracking_id,
         "message": "Application submitted for government verification. You will be notified of any updates.",
     }
+
+
+class VerifyDocumentRequest(BaseModel):
+    status: str = "VERIFIED"  # VERIFIED | REJECTED | REVIEW_REQUIRED
+
+
+@router.post("/{application_id}/documents/{doc_id}/verify")
+def verify_document(
+    application_id: str,
+    doc_id: str,
+    body: VerifyDocumentRequest,
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to verify or reject a specific uploaded document."""
+    doc_repo = DocumentRepository(db)
+    doc = doc_repo.get_by_id(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    doc.verification_status = body.status
+    db.commit()
+
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "verification_status": doc.verification_status,
+        "message": f"Document status updated to {body.status}",
+    }
+

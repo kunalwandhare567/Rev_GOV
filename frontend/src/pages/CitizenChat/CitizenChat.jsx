@@ -12,6 +12,7 @@ import { applicationsApi } from '../../api/applications'
 import { documentsApi } from '../../api/documents'
 import { t, LANGUAGE_NAMES } from '../../i18n'
 import { CONV_NODES, NODE_STEPS, FRAUD_THRESHOLDS, SUPPORTED_LANGS, APP_STATUS } from '../../utils/constants'
+import NotificationDrawer from '../../components/NotificationDrawer/NotificationDrawer'
 import styles from './CitizenChat.module.css'
 import { useRightPanel } from '../../layouts/RightPanelContext'
 import { getStatusUI, TIMELINE_STAGES, getTimelineState } from '../../utils/statusMap'
@@ -1253,16 +1254,21 @@ export default function CitizenChat() {
                       <div className={styles.govStateCard}>
                         <ShieldCheck size={28} style={{color:'var(--clr-primary-500)'}}/>
                         <div>
-                          <h4>Submitted for Verification</h4>
-                          <p>The application is pending Officer Review.</p>
+                          <h4>Submitted for Government & Document Verification</h4>
+                          <p>The application and uploaded documents are currently pending Officer Verification.</p>
                         </div>
                       </div>
                       
+                      <div style={{ margin: '1rem 0', padding: '0.875rem', background: '#fffbe8', border: '1px solid #fef3c7', borderRadius: '8px', color: '#78350f' }}>
+                        <p style={{ fontWeight: '700', fontSize: '0.875rem', marginBottom: '0.25rem' }}>🔒 Payment Option & QR Code Locked</p>
+                        <p style={{ fontSize: '0.8125rem', margin: 0 }}>Statutory fee payment with UPI QR code will be enabled automatically once your documents are verified and approved by the government admin.</p>
+                      </div>
+
                       <div className={styles.simApprovalCard}>
                         <h5>System Dev Tool</h5>
-                        <p>Simulate government officer dashboard approval immediately for testing.</p>
+                        <p>Simulate government officer document verification & approval immediately for testing.</p>
                         <button className={styles.simulateApproveBtn} onClick={handleSimulateApprove}>
-                          ⚡ Simulate Government Approval
+                          ⚡ Simulate Document Verification & Approval
                         </button>
                       </div>
                     </div>
@@ -1307,7 +1313,10 @@ export default function CitizenChat() {
                   ) : null}
                   
                   {store.currentNode !== CONV_NODES.VALIDATION && store.currentNode !== CONV_NODES.PAYMENT && store.paymentStatus !== 'PAID' && (
-                    <p className={styles.emptyDocsText}>Application must be verified by government before initiating payment.</p>
+                    <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', color: '#475569', margin: '1rem 0' }}>
+                      <p style={{ fontWeight: '600', marginBottom: '0.25rem' }}>⏳ Document Verification Pending</p>
+                      <p style={{ fontSize: '0.85rem' }}>Your uploaded documents must be verified and approved by the government admin before initiating payment with QR code.</p>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -1458,6 +1467,9 @@ export default function CitizenChat() {
           </div>
         </div>
       )}
+
+      {/* Floating Simulated Mobile Push Notification Drawer */}
+      <NotificationDrawer />
     </div>
   )
 }

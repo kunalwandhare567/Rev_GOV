@@ -1,0 +1,132 @@
+.floatingTrigger {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  border: none;
+  border-radius: 9999px;
+  padding: 10px 18px;
+  font-weight: 700;
+  font-size: 0.875rem;
+  box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.floatingTrigger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px -5px rgba(16, 185, 129, 0.6);
+}
+
+.badge {
+  background: #ef4444;
+  color: white;
+  border-radius: 9999px;
+  padding: 2px 7px;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.drawerOverlay {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  z-index: 1000;
+  width: 340px;
+  max-height: 480px;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.drawerHeader {
+  background: #1e293b;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.drawerTitle {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.closeBtn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.closeBtn:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.notificationsList {
+  padding: 12px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.emptyState {
+  padding: 24px 12px;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.8125rem;
+}
+
+.notifBubble {
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 4px solid #10b981;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.bubbleMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.senderName {
+  font-weight: 700;
+  color: #34d399;
+}
+
+.bubbleBody {
+  font-size: 0.8125rem;
+  color: #e2e8f0;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}

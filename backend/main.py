@@ -26,7 +26,7 @@ from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.routes import conversation, applications, dashboard, data_guard, auth
 from app.llm.exceptions import LLMUnavailableError
-from app.api.routes import whatsapp, ivr, tracking, documents, payment, stream
+from app.api.routes import whatsapp, ivr, tracking, documents, payment, stream, verify
 from app.core.security import SecurityMiddleware
 
 
@@ -205,6 +205,7 @@ app.include_router(conversation.router, prefix=PREFIX)
 app.include_router(applications.router, prefix=PREFIX)
 app.include_router(dashboard.router, prefix=PREFIX)
 app.include_router(data_guard.router, prefix=PREFIX)
+app.include_router(verify.router, prefix=PREFIX)
 
 # ── NEW Omnichannel Routes ──
 app.include_router(whatsapp.router, prefix=PREFIX)   # WhatsApp Clone UI

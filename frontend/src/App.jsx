@@ -38,6 +38,8 @@ import AuditLog          from './pages/AuditLog/AuditLog'
 import OfficerReview     from './pages/OfficerReview/OfficerReview'
 import EscalationPanel   from './pages/EscalationPanel/EscalationPanel'
 
+import CertificateVerifier from './pages/CertificateVerifier/CertificateVerifier'
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -51,6 +53,8 @@ export default function App() {
           <Route path="/status"   element={<StatusTracker />} />
           <Route path="/services" element={<ServiceCatalogue />} />
         </Route>
+        
+        <Route path="/verify-certificate/:certNumber" element={<CertificateVerifier />} />
 
         {/* ══════════════════════════════════════════════════
             AUTH PAGE — standalone, no layout wrapper

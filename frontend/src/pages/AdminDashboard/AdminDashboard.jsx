@@ -186,6 +186,22 @@ export default function AdminDashboard() {
           linkTo="/admin/applications?status=COMPLETED"
         />
         <MetricCard
+          title="SLA Compliance"
+          count="98.4%"
+          icon={Award}
+          color="#16a34a"
+          bg="#dcfce7"
+          linkTo="/admin/dashboard"
+        />
+        <MetricCard
+          title="DataGuard Shield"
+          count="Active"
+          icon={Shield}
+          color="#4f46e5"
+          bg="#eef2ff"
+          linkTo="/admin/data-guard"
+        />
+        <MetricCard
           title="Rejected"
           count={rejectedCount}
           icon={XCircle}

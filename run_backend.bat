@@ -7,5 +7,5 @@ echo ===================================================
 echo LLM Provider : OpenRouter (openrouter/auto)
 echo OCR Engine   : Deterministic Multilingual Tesseract
 echo.
-"C:\Python314\python.exe" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 pause

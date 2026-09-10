@@ -185,7 +185,10 @@ def simulate_government_decision(
         if not success:
             raise HTTPException(400, f"FSM error: {msg}")
 
-        app_repo.update_status(app.id, AppState.APPROVED)
+        # Admin document verification: mark all uploaded documents as VERIFIED
+        for doc in app.documents:
+            doc.verification_status = "VERIFIED"
+        db.commit()
 
         # Immediately trigger payment requirement (correct FSM flow)
         success2, msg2 = fsm.transition(AppState.PAYMENT_REQUIRED)
