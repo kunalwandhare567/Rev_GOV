@@ -249,15 +249,15 @@ const SERVICE_FIELDS = {
     { name: 'applicant_name', label: 'Applicant Full Name', type: 'string' },
     { name: 'applicant_dob', label: 'Date of Birth', type: 'date' },
     { name: 'aadhaar_number', label: 'Aadhaar Number (12 digits)', type: 'string' },
-    { name: 'annual_income', label: 'Annual Income (₹)', type: 'number' },
     { name: 'address', label: 'Residential Address', type: 'string' },
+    { name: 'annual_income', label: 'Annual Income (₹)', type: 'number' },
     { name: 'purpose', label: 'Purpose of Certificate', type: 'string' }
   ],
   caste_certificate: [
     { name: 'applicant_name', label: 'Applicant Full Name', type: 'string' },
     { name: 'applicant_dob', label: 'Date of Birth', type: 'date' },
-    { name: 'aadhaar_number', label: 'Aadhaar Number (12 digits)', type: 'string' },
     { name: 'father_name', label: "Father's Full Name", type: 'string' },
+    { name: 'aadhaar_number', label: 'Aadhaar Number (12 digits)', type: 'string' },
     { name: 'caste_category', label: 'Caste Category (SC/ST/OBC...)', type: 'string' },
     { name: 'caste_name', label: 'Sub-Caste Name', type: 'string' },
     { name: 'address', label: 'Residential Address', type: 'string' },
@@ -266,12 +266,12 @@ const SERVICE_FIELDS = {
   obc_ncl_certificate: [
     { name: 'applicant_name', label: 'Applicant Full Name', type: 'string' },
     { name: 'applicant_dob', label: 'Date of Birth', type: 'date' },
-    { name: 'aadhaar_number', label: 'Aadhaar Number (12 digits)', type: 'string' },
     { name: 'father_name', label: "Father's Full Name", type: 'string' },
-    { name: 'annual_income', label: 'Annual Family Income (₹)', type: 'number' },
+    { name: 'aadhaar_number', label: 'Aadhaar Number (12 digits)', type: 'string' },
     { name: 'caste_category', label: 'Caste Category', type: 'string' },
     { name: 'caste_name', label: 'Sub-Caste Name', type: 'string' },
     { name: 'address', label: 'Residential Address', type: 'string' },
+    { name: 'annual_income', label: 'Annual Family Income (₹)', type: 'number' },
     { name: 'purpose', label: 'Purpose of Certificate', type: 'string' }
   ],
   domicile_certificate: [
